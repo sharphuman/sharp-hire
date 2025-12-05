@@ -8,22 +8,17 @@ from pypdf import PdfReader
 from docx import Document
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.6", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Sharp Hire v1.7", page_icon="🎯", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #e0e0e0; }
-    
-    /* INPUTS */
     .stTextArea textarea, .stTextInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #1c1c1c !important;
         color: #00e5ff !important;
         border: 1px solid #333 !important;
-        font-family: 'Helvetica Neue', sans-serif !important;
     }
-    
-    /* 3-COLUMN UPLOADER LAYOUT */
     div[data-testid="stFileUploader"] section {
         background-color: #161b22;
         border: 2px dashed #00e5ff; 
@@ -31,18 +26,12 @@ st.markdown("""
         min-height: 120px !important; 
         display: flex; align-items: center; justify-content: center;
     }
-    div[data-testid="stFileUploader"] section:hover {
-        border-color: #00ffab;
-    }
-
-    /* HEADERS */
+    div[data-testid="stFileUploader"] section:hover { border-color: #00ffab; }
     h1, h2, h3 {
         background: -webkit-linear-gradient(45deg, #00e5ff, #d500f9);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
-    
-    /* BUTTONS */
     div[data-testid="stButton"] button {
         background: linear-gradient(45deg, #00e5ff, #00ffab) !important;
         color: #000000 !important;
@@ -55,7 +44,6 @@ st.markdown("""
         transform: scale(1.02);
         box-shadow: 0 0 15px #00ffab;
     }
-    
     .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
 </style>
 """, unsafe_allow_html=True)
@@ -75,7 +63,6 @@ except:
     st.error("❌ Missing API Keys.")
     st.stop()
 
-# --- CLIENTS ---
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -92,6 +79,7 @@ def extract_text_from_file(file):
         elif file_type == 'docx':
             doc = Document(file)
             return "\n".join([para.text for para in doc.paragraphs])
+        # ADDED SUPPORT FOR TXT AND MD
         elif file_type in ['txt', 'md']:
             return file.read().decode("utf-8")
         return "Unsupported format."
@@ -106,23 +94,15 @@ def transcribe_audio(file):
         return f"Whisper Error: {str(e)}"
 
 def analyze_triangulation(transcript, cv_text, jd_text, mode):
-    detail = "Provide detailed evidence." if mode == "Deep Analysis" else "Be concise."
-
     system_prompt = f"""
     You are an elite Talent Intelligence Analyst. 
-    You have three data points: 
-    1. A Job Description (JD)
-    2. A Candidate CV
-    3. An Interview Transcript.
-
-    **YOUR MISSION:**
     Perform a "Triangulation Analysis" to validate truth, fit, and recruiter performance.
 
     **ANALYSIS LOGIC:**
-    1. **INTERVIEW PERFORMANCE (New Critical Step):** Assess the candidate based ONLY on the transcript. How did they speak? Did they stutter, ramble, or speak clearly? Did they answer questions directly?
-    2. **JD Validation:** Does the candidate *actually* meet the JD requirements based on their answers? (Score specific fit).
-    3. **CV Truth Check:** Did the candidate contradict their CV? Or did they prove their written claims with deep verbal knowledge?
-    4. **Recruiter Gap Analysis:** Did the recruiter forget to ask about critical "Must-Haves" listed in the JD?
+    1. **INTERVIEW PERFORMANCE:** Assess the candidate based ONLY on the transcript. (Confidence, Clarity, etc).
+    2. **JD Validation:** Does the candidate *actually* meet the JD requirements?
+    3. **CV Truth Check:** Did the candidate contradict their CV?
+    4. **Recruiter Gap Analysis:** Did the recruiter miss critical "Must-Haves"?
 
     **OUTPUT JSON STRUCTURE:**
     {{
@@ -135,9 +115,9 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
                 "culture_fit": int, 
                 "technical_proficiency": int
             }},
-            "interview_performance_summary": "A direct assessment of how they performed in the room (e.g., confident, rambling, precise, evasive).",
-            "cv_reality_check": "Short paragraph analyzing if their interview performance matched their CV claims.",
-            "match_to_jd": "Specific assessment of how well they fit the JD requirements.",
+            "interview_performance_summary": "Direct assessment of performance.",
+            "cv_reality_check": "CV vs Reality analysis.",
+            "match_to_jd": "Fit assessment.",
             "strengths": ["..."],
             "improvements": ["..."],
             "notable_moments": ["..."]
@@ -148,26 +128,17 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
                 "question_depth": int,
                 "jd_coverage": int
             }},
-            "missed_topics": ["List key JD requirements the recruiter forgot to ask about"],
+            "missed_topics": ["List key JD requirements missed"],
             "coaching": ["..."]
         }}
     }}
     """
 
-    user_msg = f"""
-    JOB DESCRIPTION:
-    {jd_text[:10000]}
-
-    CANDIDATE CV:
-    {cv_text[:10000]}
-
-    INTERVIEW TRANSCRIPT:
-    {transcript[:50000]}
-    """
+    user_msg = f"JD: {jd_text[:10000]}\nCV: {cv_text[:10000]}\nTRANSCRIPT: {transcript[:50000]}"
 
     try:
         message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514", # V4 Model
+            model="claude-sonnet-4-20250514",
             max_tokens=4000,
             temperature=0.2,
             system=system_prompt,
@@ -181,11 +152,7 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
 
 def render_neon_progress(label, score, max_score=10):
     pct = (score / max_score) * 100
-    color = "#ff4b4b"
-    if score >= 4: color = "#ffa700"
-    if score >= 7: color = "#39ff14"
-    if score >= 9: color = "#00e5ff"
-
+    color = "#ff4b4b" if score < 4 else "#ffa700" if score < 7 else "#39ff14" if score < 9 else "#00e5ff"
     st.markdown(f"""
     <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between;">
@@ -200,23 +167,22 @@ def render_neon_progress(label, score, max_score=10):
 
 # --- LAYOUT ---
 
-st.title("🎯 Sharp Hire v1.6")
+st.title("🎯 Sharp Hire v1.7")
 st.markdown("Context-Aware Interview Intelligence")
 
-# 3 COLUMN INPUTS
 c1, c2, c3 = st.columns(3)
-
 with c1:
     st.markdown("### 1. The Job (JD)")
-    jd_file = st.file_uploader("Upload Job Description", type=['pdf','docx','txt'], key="jd")
-
+    # UPDATED TYPES
+    jd_file = st.file_uploader("Upload JD", type=['pdf','docx','txt','md'], key="jd")
 with c2:
     st.markdown("### 2. The Person (CV)")
-    cv_file = st.file_uploader("Upload Candidate CV", type=['pdf','docx','txt'], key="cv")
-
+    # UPDATED TYPES
+    cv_file = st.file_uploader("Upload CV", type=['pdf','docx','txt','md'], key="cv")
 with c3:
     st.markdown("### 3. The Call (Audio/Text)")
-    call_file = st.file_uploader("Upload Recording", type=['mp3','wav','m4a','pdf','docx'], key="call")
+    # UPDATED TYPES
+    call_file = st.file_uploader("Upload Recording", type=['mp3','wav','m4a','pdf','docx','txt','md'], key="call")
 
 st.write("")
 col_btn, col_stat = st.columns([1, 2])
@@ -228,33 +194,27 @@ with col_stat:
     else:
         st.info(f"**Status:** {st.session_state.processing_status}")
 
-# --- PROCESS LOGIC ---
 if start_btn:
     if not (jd_file and cv_file and call_file):
         st.warning("⚠️ Please upload ALL 3 files for triangulation analysis.")
     else:
-        # EXECUTE IMMEDIATELY
         try:
             st.session_state.processing_status = "Extracting Text..."
-            
             with st.spinner("Reading & Transcribing..."):
                 st.session_state.jd_text = extract_text_from_file(jd_file)
                 st.session_state.cv_text = extract_text_from_file(cv_file)
                 st.session_state.transcript_text = extract_text_from_file(call_file)
             
             st.session_state.processing_status = "Triangulating Intelligence..."
-            
             with st.spinner("Comparing JD vs CV vs Interview..."):
                 res = analyze_triangulation(st.session_state.transcript_text, st.session_state.cv_text, st.session_state.jd_text, "Deep Analysis")
                 st.session_state.analysis_result = res
                 st.session_state.processing_status = "Analysis Complete."
                 st.rerun() 
-                
         except Exception as e:
             st.error(f"Critical Error: {e}")
             st.stop()
 
-# RESULTS
 if st.session_state.analysis_result:
     r = st.session_state.analysis_result
     if "error" in r:
@@ -262,24 +222,19 @@ if st.session_state.analysis_result:
     else:
         st.divider()
         c_cand, c_rec = st.columns(2)
-        
         with c_cand:
             st.subheader(f"👤 {r['candidate']['name']}")
             with st.container(border=True):
-                # NEW SECTION: INTERVIEW PERFORMANCE
                 st.markdown("#### 🎙️ Interview Performance")
                 st.info(r['candidate']['interview_performance_summary'])
                 st.divider()
-                
                 s = r['candidate']['scores']
                 render_neon_progress("JD Role Fit", s['role_fit'])
                 render_neon_progress("Tech Proficiency", s['technical_proficiency'])
                 render_neon_progress("Culture", s['culture_fit'])
-                
                 st.markdown("---")
                 st.markdown("#### 🕵️ CV vs Reality Check")
                 st.caption(r['candidate']['cv_reality_check'])
-                
                 with st.expander("Detailed Fit Analysis"):
                     st.write(r['candidate']['match_to_jd'])
 
@@ -289,13 +244,11 @@ if st.session_state.analysis_result:
                 rs = r['recruiter']['scores']
                 render_neon_progress("JD Coverage", rs['jd_coverage'])
                 render_neon_progress("Question Depth", rs['question_depth'])
-                
                 st.markdown("---")
                 st.markdown("#### ⚠️ Missed Topics (from JD)")
                 if r['recruiter']['missed_topics']:
                     for m in r['recruiter']['missed_topics']: st.markdown(f"❌ {m}")
                 else:
-                    st.success("Great coverage! No major topics missed.")
-
+                    st.success("Great coverage!")
                 with st.expander("Coaching Tips"):
                     for c in r['recruiter']['coaching']: st.markdown(f"- {c}")
