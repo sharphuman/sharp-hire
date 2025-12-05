@@ -3,12 +3,9 @@ import pandas as pd
 import json
 import os
 from anthropic import Anthropic
-from openai import OpenAI
-from pypdf import PdfReader
-from docx import Document
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.3.1", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Sharp Hire SIM v2.2", page_icon="🎲", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -18,14 +15,6 @@ st.markdown("""
         background-color: #1c1c1c !important;
         color: #00e5ff !important;
         border: 1px solid #333 !important;
-    }
-    /* 3-COLUMN UPLOADER LAYOUT */
-    div[data-testid="stFileUploader"] section {
-        background-color: #161b22;
-        border: 2px dashed #00e5ff; 
-        border-radius: 10px;
-        min-height: 120px !important; 
-        display: flex; align-items: center; justify-content: center;
     }
     h1, h2, h3 {
         background: -webkit-linear-gradient(45deg, #00e5ff, #d500f9);
@@ -38,241 +27,257 @@ st.markdown("""
         border: none !important;
         font-weight: 800 !important;
         text-transform: uppercase;
+        transition: transform 0.2s;
+    }
+    div[data-testid="stButton"] button:hover {
+        transform: scale(1.02);
+        box-shadow: 0 0 15px #00ffab;
     }
     .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE ---
-if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
-if 'transcript_text' not in st.session_state: st.session_state.transcript_text = ""
-if 'cv_text' not in st.session_state: st.session_state.cv_text = ""
-if 'jd_text' not in st.session_state: st.session_state.jd_text = ""
-if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready."
+if 'sim_data' not in st.session_state: st.session_state.sim_data = None
+if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready to Simulate."
 
 # --- SECRETS ---
 try:
     ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 except:
-    st.error("❌ Missing API Keys.")
+    st.error("❌ Missing Anthropic API Key.")
     st.stop()
 
-# --- CLIENTS ---
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # --- FUNCTIONS ---
 
-def extract_text_from_file(file):
-    try:
-        file_type = file.name.split('.')[-1].lower()
-        if file_type in ['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'mpga']:
-            return transcribe_audio(file)
-        elif file_type == 'pdf':
-            reader = PdfReader(file)
-            return "\n".join([page.extract_text() for page in reader.pages])
-        elif file_type == 'docx':
-            doc = Document(file)
-            return "\n".join([para.text for para in doc.paragraphs])
-        elif file_type in ['txt', 'md']:
-            return file.read().decode("utf-8")
-        return "Unsupported format."
-    except Exception as e:
-        return f"Error extracting {file.name}: {str(e)}"
+def clean_json(text):
+    text = text.strip()
+    if "```json" in text: text = text.split("```json")[1].split("```")[0]
+    elif "```" in text: text = text.split("```")[1].split("```")[0]
+    return json.loads(text)
 
-def transcribe_audio(file):
-    try:
-        transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=file)
-        return transcript.text
-    except Exception as e:
-        return f"Whisper Error: {str(e)}"
+def generate_full_scenario(job_title, industry, level, requirements):
+    """
+    Generates 1 JD and 2 DEEP Candidates (Quality over Quantity).
+    """
+    prompt = f"""
+    You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario.
+    
+    **PARAMETERS:**
+    - Role: {job_title}
+    - Industry: {industry}
+    - Level: {level}
+    - Key Reqs: {requirements}
 
-def analyze_triangulation(transcript, cv_text, jd_text, mode):
-    detail = "Provide detailed evidence." if mode == "Deep Analysis" else "Be concise."
-
-    system_prompt = f"""
-    You are an elite Talent Intelligence Analyst. 
-    You have three data points: 
-    1. A Job Description (JD)
-    2. A Candidate CV
-    3. An Interview Transcript.
-
-    **YOUR MISSION:**
-    Perform a "Triangulation Analysis" to validate truth, fit, and recruiter performance.
-
-    **ANALYSIS LOGIC:**
-    1. **JD Validation:** Does the candidate *actually* meet the JD requirements based on their answers? (Score specific fit).
-    2. **CV Truth Check:** Did the candidate contradict their CV? Or did they prove their written claims with deep verbal knowledge?
-    3. **Recruiter Gap Analysis:** Did the recruiter forget to ask about critical "Must-Haves" listed in the JD?
+    **TASK:**
+    1. **Job Description (JD):** Write a full, professional JD with Responsibilities and Requirements.
+    2. **Create 2 Distinct Candidates:**
+       - **Candidate A (The Strong Fit):** Competent, good communicator, clear experience.
+       - **Candidate B (The Risk/Bad Fit):** Maybe nervous, maybe lying, maybe technical but rude, or maybe lacks specific key skills.
+    
+    **CRITICAL INSTRUCTION: DETAIL LEVEL**
+    - **CV:** Do NOT summarize. Write the **FULL TEXT** of a resume. List companies, dates, bullet points of projects, and skills. It must look like a text-dump of a PDF.
+    - **TRANSCRIPT:** Do NOT summarize. Write a **VERBATIM SCRIPT** of the interview. 
+        - Include "Umm", "Uh", pauses, and interruptions to make it realistic.
+        - The Recruiter should ask deep technical questions based on the requirements.
+        - The Candidate should give long, multi-sentence answers (or struggle significantly).
+        - Length: At least 20-30 exchanges per candidate.
 
     **OUTPUT JSON STRUCTURE:**
     {{
-        "call_summary": ["Bullet 1", "Bullet 2"],
-        "candidate": {{
-            "name": "Name",
-            "scores": {{
-                "role_fit": int, 
-                "communication": int, 
-                "culture_fit": int, 
-                "technical_proficiency": int
+        "job_description": "Full JD Text...",
+        "candidates": [
+            {{
+                "id": "A",
+                "name": "Name",
+                "vibe": "Strong Match",
+                "cv_text": "EXPERIENCE\\n\\nSenior Engineer | Tech Corp | 2019-Present\\n- Managed Active Directory...",
+                "transcript": "Recruiter: Hi, thanks for joining.\\nCandidate: Yeah, great to be here.\\nRecruiter: Tell me about your experience with Quest Migration..."
             }},
-            "cv_reality_check": "Short paragraph analyzing if their interview performance matched their CV claims.",
-            "match_to_jd": "Specific assessment of how well they fit the JD requirements.",
-            "strengths": ["..."],
-            "improvements": ["..."],
-            "notable_moments": ["..."]
-        }},
-        "recruiter": {{
-            "scores": {{
-                "structure": int,
-                "question_depth": int,
-                "jd_coverage": int
-            }},
-            "missed_topics": ["List key JD requirements the recruiter forgot to ask about"],
-            "coaching": ["..."]
-        }}
+            {{
+                "id": "B",
+                "name": "Name",
+                "vibe": "Risky / Weak",
+                "cv_text": "...",
+                "transcript": "..."
+            }}
+        ]
     }}
     """
-
-    user_msg = f"""
-    JOB DESCRIPTION:
-    {jd_text[:10000]}
-
-    CANDIDATE CV:
-    {cv_text[:10000]}
-
-    INTERVIEW TRANSCRIPT:
-    {transcript[:50000]}
-    """
-
+    
     try:
-        message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-latest", # Updated Model ID
-            max_tokens=4000,
-            temperature=0.2,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_msg}]
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514", # UPDATED TO V4
+            max_tokens=8000,
+            temperature=0.7,
+            messages=[{"role": "user", "content": prompt}]
         )
-        response = message.content[0].text
-        if "```json" in response: response = response.split("```json")[1].split("```")[0]
-        return json.loads(response)
+        return clean_json(msg.content[0].text)
     except Exception as e:
         return {"error": str(e)}
 
-def render_neon_progress(label, score, max_score=10):
-    pct = (score / max_score) * 100
-    color = "#ff4b4b"
-    if score >= 4: color = "#ffa700"
-    if score >= 7: color = "#39ff14"
-    if score >= 9: color = "#00e5ff"
+def analyze_candidates(scenario_data):
+    """
+    Analyzes the candidates using the "Sharp Hire" logic.
+    """
+    jd = scenario_data['job_description']
+    cands = scenario_data['candidates']
+    
+    prompt = f"""
+    Analyze these 2 candidates against the Job Description.
+    
+    JOB DESCRIPTION: {jd[:2000]}
+    
+    CANDIDATE DATA: {json.dumps(cands)}
+    
+    **TASK:**
+    Return a JSON with detailed scoring.
+    
+    **OUTPUT JSON:**
+    {{
+        "analyses": [
+            {{
+                "id": "A",
+                "role_fit_score": 9,
+                "comm_score": 9,
+                "tech_score": 9,
+                "culture_score": 9,
+                "verdict": "Strong Hire",
+                "reasoning": "..."
+            }},
+            {{
+                "id": "B",
+                "role_fit_score": 4,
+                "comm_score": 5,
+                "tech_score": 5,
+                "culture_score": 4,
+                "verdict": "No Hire",
+                "reasoning": "..."
+            }}
+        ]
+    }}
+    """
+    
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514", # UPDATED TO V4
+            max_tokens=4000,
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return clean_json(msg.content[0].text)
+    except Exception as e:
+        return {"error": str(e)}
 
-    st.markdown(f"""
-    <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between;">
-            <span style="color: #e0e0e0; font-size: 0.9rem;">{label}</span>
-            <span style="color: {color}; font-weight: bold;">{score}/10</span>
-        </div>
-        <div style="background-color: #333; height: 8px; border-radius: 4px; margin-top: 4px;">
-            <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px; box-shadow: 0 0 5px {color};"></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+# --- UI LAYOUT ---
 
-# --- LAYOUT ---
+st.title("🎲 Sharp Hire: Deep Simulation")
+st.markdown("Generate full-length interviews and CVs for testing.")
 
-st.title("🎯 Sharp Hire v1.3.1")
-st.markdown("Context-Aware Interview Intelligence")
+# INPUTS
+c1, c2 = st.columns(2)
+with c1: 
+    job_title = st.text_input("Role Title", "Senior Infrastructure Engineer")
+    industry = st.text_input("Industry", "Enterprise IT")
+with c2: 
+    level = st.selectbox("Seniority", ["Senior/Lead", "Executive", "Mid-Level"])
+    requirements = st.text_input("Key Requirements", "Quest Migration, Active Directory, VMware, 20 Years Exp")
 
-# 3 COLUMN INPUTS
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    st.markdown("### 1. The Job (JD)")
-    jd_file = st.file_uploader("Upload Job Description", type=['pdf','docx','txt'], key="jd")
-
-with c2:
-    st.markdown("### 2. The Person (CV)")
-    cv_file = st.file_uploader("Upload Candidate CV", type=['pdf','docx','txt'], key="cv")
-
-with c3:
-    st.markdown("### 3. The Call (Audio/Text)")
-    call_file = st.file_uploader("Upload Recording", type=['mp3','wav','m4a','pdf','docx'], key="call")
-
-st.write("")
-col_btn, col_stat = st.columns([1, 2])
-with col_btn:
-    start_btn = st.button("Start Triangulation", type="primary", use_container_width=True)
-with col_stat:
-    if st.session_state.processing_status == "Analysis Complete.":
-        st.success("Analysis Complete!")
-    else:
-        st.info(f"**Status:** {st.session_state.processing_status}")
-
-# --- PROCESS LOGIC (FIXED) ---
-if start_btn:
-    if not (jd_file and cv_file and call_file):
-        st.warning("⚠️ Please upload ALL 3 files for triangulation analysis.")
-    else:
-        # EXECUTE IMMEDIATELY INSIDE THE BUTTON BLOCK
-        try:
-            st.session_state.processing_status = "Extracting Text..."
-            # Force a UI update to show status change
-            
-            with st.spinner("Reading & Transcribing..."):
-                st.session_state.jd_text = extract_text_from_file(jd_file)
-                st.session_state.cv_text = extract_text_from_file(cv_file)
-                st.session_state.transcript_text = extract_text_from_file(call_file)
-            
-            st.session_state.processing_status = "Triangulating Intelligence..."
-            
-            with st.spinner("Comparing JD vs CV vs Interview..."):
-                res = analyze_triangulation(st.session_state.transcript_text, st.session_state.cv_text, st.session_state.jd_text, "Deep Analysis")
-                st.session_state.analysis_result = res
-                st.session_state.processing_status = "Analysis Complete."
-                st.rerun() # Refresh to show results
-                
-        except Exception as e:
-            st.error(f"Critical Error: {e}")
+if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
+    with st.status("⚙️ Generating Deep Simulation...", expanded=True) as status:
+        st.write("📝 Drafting detailed Job Description...")
+        st.write("👤 Inventing Candidates (Generating full CVs & Transcripts)...")
+        
+        # 1. Generate Content
+        scenario = generate_full_scenario(job_title, industry, level, requirements)
+        
+        if "error" in scenario:
+            st.error(f"Generation Failed: {scenario['error']}")
             st.stop()
+            
+        st.write("🧠 Analyzing Performance...")
+        
+        # 2. Analyze Content
+        analysis = analyze_candidates(scenario)
+        
+        if "error" in analysis:
+            st.error(f"Analysis Failed: {analysis['error']}")
+            st.stop()
+        
+        # 3. Merge Data
+        final_data = []
+        for i, cand in enumerate(scenario['candidates']):
+            # Robust merge: find matching ID analysis
+            matching_analysis = next((item for item in analysis['analyses'] if item["id"] == cand["id"]), None)
+            
+            if matching_analysis:
+                merged = {**cand, **matching_analysis}
+                final_data.append(merged)
+            else:
+                st.warning(f"Could not find analysis for Candidate {cand['name']}")
+            
+        st.session_state.sim_data = {"jd": scenario['job_description'], "results": final_data}
+        status.update(label="Simulation Complete!", state="complete", expanded=False)
 
 # RESULTS
-if st.session_state.analysis_result:
-    r = st.session_state.analysis_result
-    if "error" in r:
-        st.error(r['error'])
-    else:
-        st.divider()
-        c_cand, c_rec = st.columns(2)
-        
-        with c_cand:
-            st.subheader(f"👤 {r['candidate']['name']}")
-            with st.container(border=True):
-                s = r['candidate']['scores']
-                render_neon_progress("JD Role Fit", s['role_fit'])
-                render_neon_progress("Tech Proficiency", s['technical_proficiency'])
-                render_neon_progress("Culture", s['culture_fit'])
-                
-                st.markdown("---")
-                st.markdown("#### 🕵️ CV vs Reality Check")
-                st.info(r['candidate']['cv_reality_check'])
-                
-                with st.expander("Fit Analysis"):
-                    st.write(r['candidate']['match_to_jd'])
+if st.session_state.sim_data:
+    results = st.session_state.sim_data['results']
+    
+    st.divider()
+    
+    # 1. COMPARISON TABLE
+    st.subheader("📊 Candidate Leaderboard")
+    
+    df_data = []
+    for r in results:
+        df_data.append({
+            "Name": r['name'],
+            "Profile": r['vibe'],
+            "Role Fit": r['role_fit_score'],
+            "Tech Skills": r['tech_score'],
+            "Verdict": r['verdict']
+        })
+    
+    st.dataframe(
+        pd.DataFrame(df_data),
+        column_config={
+            "Role Fit": st.column_config.ProgressColumn("Fit", format="%d", min_value=0, max_value=10),
+            "Tech Skills": st.column_config.ProgressColumn("Tech", format="%d", min_value=0, max_value=10),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
 
-        with c_rec:
-            st.subheader("🎧 Recruiter Performance")
-            with st.container(border=True):
-                rs = r['recruiter']['scores']
-                render_neon_progress("JD Coverage", rs['jd_coverage'])
-                render_neon_progress("Question Depth", rs['question_depth'])
-                
-                st.markdown("---")
-                st.markdown("#### ⚠️ Missed Topics (from JD)")
-                if r['recruiter']['missed_topics']:
-                    for m in r['recruiter']['missed_topics']: st.markdown(f"❌ {m}")
-                else:
-                    st.success("Great coverage! No major topics missed.")
+    st.divider()
 
-                with st.expander("Coaching Tips"):
-                    for c in r['recruiter']['coaching']: st.markdown(f"- {c}")
+    # 2. DEEP DIVE TABS
+    t_jd, t1, t2 = st.tabs(["📄 Job Description", f"👤 {results[0]['name']}", f"👤 {results[1]['name']}"])
+    
+    with t_jd:
+        st.markdown(st.session_state.sim_data['jd'])
+
+    # Candidate Tabs
+    tabs = [t1, t2]
+    for i, tab in enumerate(tabs):
+        if i < len(results):
+            cand = results[i]
+            with tab:
+                c_info, c_docs = st.columns([1, 1])
+                
+                with c_info:
+                    st.markdown(f"### Verdict: {cand['verdict']}")
+                    st.info(f"**AI Analysis:** {cand['reasoning']}")
+                    
+                    st.markdown("#### 📊 Scores")
+                    st.progress(cand['role_fit_score']/10, text=f"Role Fit: {cand['role_fit_score']}/10")
+                    st.progress(cand['comm_score']/10, text=f"Communication: {cand['comm_score']}/10")
+                    st.progress(cand['culture_score']/10, text=f"Culture Fit: {cand['culture_score']}/10")
+
+                with c_docs:
+                    with st.expander("📄 View Generated CV", expanded=True):
+                        st.text(cand['cv_text'])
+                    
+                    with st.expander("💬 View Interview Transcript", expanded=True):
+                        st.text(cand['transcript'])
