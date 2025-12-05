@@ -4,9 +4,11 @@ import json
 import os
 from anthropic import Anthropic
 from openai import OpenAI
+from pypdf import PdfReader
+from docx import Document
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.0", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Sharp Hire v1.1", page_icon="🎯", layout="wide")
 
 # --- SHARP PALETTE CSS (NEON/BLACK THEME) ---
 st.markdown("""
@@ -22,13 +24,16 @@ st.markdown("""
         font-family: 'Helvetica Neue', sans-serif !important;
     }
     
-    /* SQUARE FILE UPLOADER */
+    /* SQUARE FILE UPLOADER - CENTERED & TALL */
     div[data-testid="stFileUploader"] section {
         background-color: #161b22;
         border: 2px dashed #00e5ff; 
         border-radius: 15px;
-        min-height: 160px !important; 
+        min-height: 200px !important; 
         display: flex; align-items: center; justify-content: center;
+    }
+    div[data-testid="stFileUploader"] section:hover {
+        border-color: #00ffab; /* Green on hover */
     }
 
     /* HEADERS */
@@ -88,6 +93,36 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --- CORE FUNCTIONS ---
 
+def extract_text_from_file(file):
+    """Router to extract text based on file type (Audio vs Doc)."""
+    file_type = file.name.split('.')[-1].lower()
+    
+    # 1. AUDIO/VIDEO -> WHISPER
+    if file_type in ['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'mpga']:
+        return transcribe_audio(file)
+    
+    # 2. PDF
+    elif file_type == 'pdf':
+        try:
+            reader = PdfReader(file)
+            return "\n".join([page.extract_text() for page in reader.pages])
+        except Exception as e:
+            return f"Error reading PDF: {e}"
+            
+    # 3. DOCX
+    elif file_type == 'docx':
+        try:
+            doc = Document(file)
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            return f"Error reading DOCX: {e}"
+            
+    # 4. TEXT
+    elif file_type in ['txt', 'md']:
+        return file.read().decode("utf-8")
+        
+    return "Unsupported file format."
+
 def transcribe_audio(file):
     """Transcribes audio using OpenAI Whisper."""
     try:
@@ -97,15 +132,13 @@ def transcribe_audio(file):
         )
         return transcript.text
     except Exception as e:
-        return f"Error: {str(e)}"
+        # Catch 25MB Limit error gracefully
+        if "413" in str(e): return "Error: Audio file exceeds 25MB limit. Please compress or split."
+        return f"Whisper Error: {str(e)}"
 
 def analyze_call(transcript, mode):
-    """
-    Main Analysis Engine using Claude 3.5 Sonnet.
-    Returns structured JSON.
-    """
+    """Main Analysis Engine using Claude 3.5 Sonnet."""
     
-    # Detail level config
     if mode == "Deep Analysis":
         detail_instruction = "Provide detailed, nuanced feedback with specific quotes for every claim. Be rigorous in scoring."
     else:
@@ -116,7 +149,7 @@ def analyze_call(transcript, mode):
     Your task is to analyze a transcript of an interview call between a **Recruiter** and a **Candidate**.
     
     **CONTEXT:**
-    If the transcript does not explicitly label speakers, you must INFER who is who based on context (Recruiter asks questions/sets context; Candidate answers).
+    If the transcript does not explicitly label speakers, you must INFER who is who based on context (Recruiter asks questions; Candidate answers).
 
     **TASK:**
     Analyze the call and output a valid JSON object.
@@ -155,24 +188,20 @@ def analyze_call(transcript, mode):
             "strengths": ["..."]
         }}
     }}
-    
-    **TONE:** Constructive, professional, coaching-oriented. No harsh language.
     """
 
-    user_message = f"Here is the transcript:\n\n{transcript[:50000]}" # Truncate for safety
+    user_message = f"Here is the transcript:\n\n{transcript[:60000]}" # Safety truncate
 
     try:
         message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
+            model="claude-3-5-sonnet-latest", # FIX: Using 'latest' to avoid version 404s
             max_tokens=4000,
             temperature=0.2,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}]
         )
         
-        # Parse JSON from response
         response_text = message.content[0].text
-        # Clean potential markdown wrappers
         if "```json" in response_text:
             response_text = response_text.split("```json")[1].split("```")[0]
         elif "```" in response_text:
@@ -186,8 +215,6 @@ def analyze_call(transcript, mode):
 def render_neon_progress(label, score, max_score=10):
     """Custom HTML/CSS Progress Bar for the Sharp Look"""
     percentage = (score / max_score) * 100
-    
-    # Color Logic
     color = "#ff4b4b" # Red
     if score >= 4: color = "#ffa700" # Orange/Yellow
     if score >= 7: color = "#39ff14" # Neon Green
@@ -207,67 +234,54 @@ def render_neon_progress(label, score, max_score=10):
 
 # --- UI LAYOUT ---
 
-st.title("🎯 Sharp Hire")
+st.title("🎯 Sharp Hire v1.1")
 st.markdown("Automated Interview Intelligence & Coaching")
 
-# SIDEBAR CONFIG
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    analysis_mode = st.radio("Analysis Depth", ["Light (Fast)", "Deep Analysis"], index=1)
-    st.divider()
-    st.info("Files are processed in memory and never saved to disk.")
+# --- 2 COLUMN LAYOUT (Input | Status) ---
+col1, col2 = st.columns([2, 1])
 
-# INPUT SECTION
-col_input, col_status = st.columns([2, 1])
+with col1:
+    st.markdown("### 📎 Upload Interview")
+    # UNIFIED UPLOADER: Accepts Audio, Video, PDF, Docx
+    uploaded_file = st.file_uploader(
+        "Drag and drop call recording or transcript...", 
+        type=['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'pdf', 'docx', 'txt'], 
+        label_visibility="collapsed"
+    )
 
-with col_input:
-    tab_upload, tab_paste = st.tabs(["📁 Upload Audio", "📝 Paste Text"])
-    
-    with tab_upload:
-        uploaded_file = st.file_uploader("Upload Recording (mp3, m4a, wav)", type=['mp3', 'm4a', 'wav'], label_visibility="collapsed")
-        
-    with tab_paste:
-        pasted_text = st.text_area("Paste Transcript", height=200, placeholder="[00:00] Recruiter: Hi there...")
-
-with col_status:
-    st.markdown("### Status")
+with col2:
+    st.markdown("### ⚙️ Config")
+    analysis_mode = st.radio("Depth", ["Light (Fast)", "Deep Analysis"], index=1)
     st.info(st.session_state.processing_status)
-    if st.session_state.analysis_result and "error" not in st.session_state.analysis_result:
-        st.success("Analysis Complete!")
 
 # START BUTTON
 st.write("")
 if st.button("Start Sharp Analysis", type="primary", use_container_width=True):
     
-    # 1. Input Handling
-    transcript_to_process = None
+    if uploaded_file:
+        st.session_state.processing_status = "Processing File..."
+        st.session_state.analysis_result = None # Clear old results
+        st.rerun() # Force UI refresh
     
     if uploaded_file:
-        st.session_state.processing_status = "Transcribing Audio..."
-        st.rerun() # Force UI update
-    
-    if uploaded_file:
-        with st.spinner("🎧 Transcribing with Whisper..."):
-            transcript_to_process = transcribe_audio(uploaded_file)
-            st.session_state.transcript_text = transcript_to_process
-    elif pasted_text:
-        transcript_to_process = pasted_text
-        st.session_state.transcript_text = pasted_text
-    
-    # 2. Logic Gate
-    if not transcript_to_process:
-        st.warning("Please upload a file or paste text.")
-    elif "Error" in transcript_to_process:
-        st.error(transcript_to_process)
-        st.session_state.processing_status = "Error."
+        # 1. EXTRACT / TRANSCRIBE
+        with st.spinner("🎧 Reading / Transcribing..."):
+            extracted_text = extract_text_from_file(uploaded_file)
+            st.session_state.transcript_text = extracted_text
+        
+        if "Error" in extracted_text or "Unsupported" in extracted_text:
+            st.error(extracted_text)
+            st.session_state.processing_status = "Error."
+        else:
+            # 2. ANALYZE
+            st.session_state.processing_status = "Analyzing Intelligence..."
+            with st.spinner("🧠 Analyzing behaviors & skills..."):
+                result = analyze_call(extracted_text, analysis_mode)
+                st.session_state.analysis_result = result
+                st.session_state.processing_status = "Analysis Complete."
+                st.rerun()
     else:
-        # 3. Analyze
-        st.session_state.processing_status = "Analyzing Conversation..."
-        with st.spinner("🧠 Extracting insights..."):
-            result = analyze_call(transcript_to_process, analysis_mode)
-            st.session_state.analysis_result = result
-            st.session_state.processing_status = "Done."
-            st.rerun()
+        st.warning("Please upload a file first.")
 
 # --- RESULTS DASHBOARD ---
 if st.session_state.analysis_result:
