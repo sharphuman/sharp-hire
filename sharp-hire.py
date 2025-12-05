@@ -8,7 +8,7 @@ from pypdf import PdfReader
 from docx import Document
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.3", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Sharp Hire v1.3.1", page_icon="🎯", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -65,22 +65,21 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # --- FUNCTIONS ---
 
 def extract_text_from_file(file):
-    file_type = file.name.split('.')[-1].lower()
-    if file_type in ['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'mpga']:
-        return transcribe_audio(file)
-    elif file_type == 'pdf':
-        try:
+    try:
+        file_type = file.name.split('.')[-1].lower()
+        if file_type in ['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'mpga']:
+            return transcribe_audio(file)
+        elif file_type == 'pdf':
             reader = PdfReader(file)
             return "\n".join([page.extract_text() for page in reader.pages])
-        except: return "Error reading PDF"
-    elif file_type == 'docx':
-        try:
+        elif file_type == 'docx':
             doc = Document(file)
             return "\n".join([para.text for para in doc.paragraphs])
-        except: return "Error reading DOCX"
-    elif file_type in ['txt', 'md']:
-        return file.read().decode("utf-8")
-    return "Unsupported format."
+        elif file_type in ['txt', 'md']:
+            return file.read().decode("utf-8")
+        return "Unsupported format."
+    except Exception as e:
+        return f"Error extracting {file.name}: {str(e)}"
 
 def transcribe_audio(file):
     try:
@@ -90,9 +89,6 @@ def transcribe_audio(file):
         return f"Whisper Error: {str(e)}"
 
 def analyze_triangulation(transcript, cv_text, jd_text, mode):
-    """
-    Triangulates data between the Job Description, CV, and Interview Transcript.
-    """
     detail = "Provide detailed evidence." if mode == "Deep Analysis" else "Be concise."
 
     system_prompt = f"""
@@ -152,7 +148,7 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
 
     try:
         message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-latest",
+            model="claude-3-5-sonnet-latest", # Updated Model ID
             max_tokens=4000,
             temperature=0.2,
             system=system_prompt,
@@ -185,7 +181,7 @@ def render_neon_progress(label, score, max_score=10):
 
 # --- LAYOUT ---
 
-st.title("🎯 Sharp Hire v1.3")
+st.title("🎯 Sharp Hire v1.3.1")
 st.markdown("Context-Aware Interview Intelligence")
 
 # 3 COLUMN INPUTS
@@ -208,28 +204,37 @@ col_btn, col_stat = st.columns([1, 2])
 with col_btn:
     start_btn = st.button("Start Triangulation", type="primary", use_container_width=True)
 with col_stat:
-    st.info(f"**Status:** {st.session_state.processing_status}")
+    if st.session_state.processing_status == "Analysis Complete.":
+        st.success("Analysis Complete!")
+    else:
+        st.info(f"**Status:** {st.session_state.processing_status}")
 
-# PROCESS LOGIC
+# --- PROCESS LOGIC (FIXED) ---
 if start_btn:
     if not (jd_file and cv_file and call_file):
         st.warning("⚠️ Please upload ALL 3 files for triangulation analysis.")
     else:
-        st.session_state.processing_status = "Extracting Text..."
-        st.rerun()
-
-if start_btn and jd_file and cv_file and call_file:
-    with st.spinner("Reading & Transcribing..."):
-        st.session_state.jd_text = extract_text_from_file(jd_file)
-        st.session_state.cv_text = extract_text_from_file(cv_file)
-        st.session_state.transcript_text = extract_text_from_file(call_file)
-    
-    st.session_state.processing_status = "Triangulating Intelligence..."
-    with st.spinner("Comparing JD vs CV vs Interview..."):
-        res = analyze_triangulation(st.session_state.transcript_text, st.session_state.cv_text, st.session_state.jd_text, "Deep Analysis")
-        st.session_state.analysis_result = res
-        st.session_state.processing_status = "Analysis Complete."
-        st.rerun()
+        # EXECUTE IMMEDIATELY INSIDE THE BUTTON BLOCK
+        try:
+            st.session_state.processing_status = "Extracting Text..."
+            # Force a UI update to show status change
+            
+            with st.spinner("Reading & Transcribing..."):
+                st.session_state.jd_text = extract_text_from_file(jd_file)
+                st.session_state.cv_text = extract_text_from_file(cv_file)
+                st.session_state.transcript_text = extract_text_from_file(call_file)
+            
+            st.session_state.processing_status = "Triangulating Intelligence..."
+            
+            with st.spinner("Comparing JD vs CV vs Interview..."):
+                res = analyze_triangulation(st.session_state.transcript_text, st.session_state.cv_text, st.session_state.jd_text, "Deep Analysis")
+                st.session_state.analysis_result = res
+                st.session_state.processing_status = "Analysis Complete."
+                st.rerun() # Refresh to show results
+                
+        except Exception as e:
+            st.error(f"Critical Error: {e}")
+            st.stop()
 
 # RESULTS
 if st.session_state.analysis_result:
