@@ -8,7 +8,7 @@ from pypdf import PdfReader
 from docx import Document
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.5", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Sharp Hire v1.6", page_icon="🎯", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -119,9 +119,10 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
     Perform a "Triangulation Analysis" to validate truth, fit, and recruiter performance.
 
     **ANALYSIS LOGIC:**
-    1. **JD Validation:** Does the candidate *actually* meet the JD requirements based on their answers? (Score specific fit).
-    2. **CV Truth Check:** Did the candidate contradict their CV? Or did they prove their written claims with deep verbal knowledge?
-    3. **Recruiter Gap Analysis:** Did the recruiter forget to ask about critical "Must-Haves" listed in the JD?
+    1. **INTERVIEW PERFORMANCE (New Critical Step):** Assess the candidate based ONLY on the transcript. How did they speak? Did they stutter, ramble, or speak clearly? Did they answer questions directly?
+    2. **JD Validation:** Does the candidate *actually* meet the JD requirements based on their answers? (Score specific fit).
+    3. **CV Truth Check:** Did the candidate contradict their CV? Or did they prove their written claims with deep verbal knowledge?
+    4. **Recruiter Gap Analysis:** Did the recruiter forget to ask about critical "Must-Haves" listed in the JD?
 
     **OUTPUT JSON STRUCTURE:**
     {{
@@ -134,6 +135,7 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
                 "culture_fit": int, 
                 "technical_proficiency": int
             }},
+            "interview_performance_summary": "A direct assessment of how they performed in the room (e.g., confident, rambling, precise, evasive).",
             "cv_reality_check": "Short paragraph analyzing if their interview performance matched their CV claims.",
             "match_to_jd": "Specific assessment of how well they fit the JD requirements.",
             "strengths": ["..."],
@@ -165,7 +167,7 @@ def analyze_triangulation(transcript, cv_text, jd_text, mode):
 
     try:
         message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514", # UPDATED TO V4
+            model="claude-sonnet-4-20250514", # V4 Model
             max_tokens=4000,
             temperature=0.2,
             system=system_prompt,
@@ -198,7 +200,7 @@ def render_neon_progress(label, score, max_score=10):
 
 # --- LAYOUT ---
 
-st.title("🎯 Sharp Hire v1.5")
+st.title("🎯 Sharp Hire v1.6")
 st.markdown("Context-Aware Interview Intelligence")
 
 # 3 COLUMN INPUTS
@@ -231,7 +233,7 @@ if start_btn:
     if not (jd_file and cv_file and call_file):
         st.warning("⚠️ Please upload ALL 3 files for triangulation analysis.")
     else:
-        # EXECUTE IMMEDIATELY INSIDE THE BUTTON BLOCK
+        # EXECUTE IMMEDIATELY
         try:
             st.session_state.processing_status = "Extracting Text..."
             
@@ -264,6 +266,11 @@ if st.session_state.analysis_result:
         with c_cand:
             st.subheader(f"👤 {r['candidate']['name']}")
             with st.container(border=True):
+                # NEW SECTION: INTERVIEW PERFORMANCE
+                st.markdown("#### 🎙️ Interview Performance")
+                st.info(r['candidate']['interview_performance_summary'])
+                st.divider()
+                
                 s = r['candidate']['scores']
                 render_neon_progress("JD Role Fit", s['role_fit'])
                 render_neon_progress("Tech Proficiency", s['technical_proficiency'])
@@ -271,9 +278,9 @@ if st.session_state.analysis_result:
                 
                 st.markdown("---")
                 st.markdown("#### 🕵️ CV vs Reality Check")
-                st.info(r['candidate']['cv_reality_check'])
+                st.caption(r['candidate']['cv_reality_check'])
                 
-                with st.expander("Fit Analysis"):
+                with st.expander("Detailed Fit Analysis"):
                     st.write(r['candidate']['match_to_jd'])
 
         with c_rec:
