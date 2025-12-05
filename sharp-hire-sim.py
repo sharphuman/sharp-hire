@@ -5,7 +5,7 @@ import os
 from anthropic import Anthropic
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire SIM v2.1", page_icon="🎲", layout="wide")
+st.set_page_config(page_title="Sharp Hire SIM v2.3", page_icon="🎲", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -21,6 +21,7 @@ st.markdown("""
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
+    /* NEON GRADIENT BUTTONS */
     div[data-testid="stButton"] button {
         background: linear-gradient(45deg, #00e5ff, #00ffab) !important;
         color: #000000 !important;
@@ -63,7 +64,7 @@ def generate_full_scenario(job_title, industry, level, requirements):
     Generates 1 JD and 2 DEEP Candidates (Quality over Quantity).
     """
     prompt = f"""
-    You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario.
+    You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario for a simulation.
     
     **PARAMETERS:**
     - Role: {job_title}
@@ -75,7 +76,7 @@ def generate_full_scenario(job_title, industry, level, requirements):
     1. **Job Description (JD):** Write a full, professional JD with Responsibilities and Requirements.
     2. **Create 2 Distinct Candidates:**
        - **Candidate A (The Strong Fit):** Competent, good communicator, clear experience.
-       - **Candidate B (The Risk/Bad Fit):** Maybe nervous, maybe lying, maybe technical but rude, or maybe lacks specific key skills.
+       - **Candidate B (The Risk/Bad Fit):** Nervous, evasive, or lacks specific key skills despite a good CV.
     
     **CRITICAL INSTRUCTION: DETAIL LEVEL**
     - **CV:** Do NOT summarize. Write the **FULL TEXT** of a resume. List companies, dates (e.g. 2018-2023), bullet points of projects, and skills. It must look like a text-dump of a PDF.
@@ -109,8 +110,8 @@ def generate_full_scenario(job_title, industry, level, requirements):
     
     try:
         msg = client.messages.create(
-            model="claude-3-5-sonnet-latest",
-            max_tokens=8000, # Increased for longer text
+            model="claude-sonnet-4-20250514", 
+            max_tokens=8000,
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -162,7 +163,7 @@ def analyze_candidates(scenario_data):
     
     try:
         msg = client.messages.create(
-            model="claude-3-5-sonnet-latest",
+            model="claude-sonnet-4-20250514", 
             max_tokens=4000,
             temperature=0.2,
             messages=[{"role": "user", "content": prompt}]
@@ -173,8 +174,8 @@ def analyze_candidates(scenario_data):
 
 # --- UI LAYOUT ---
 
-st.title("🎲 Sharp Hire: Deep Simulation")
-st.markdown("Generate full-length interviews and CVs for testing.")
+st.title("🎲 Sharp Hire: Asset Factory")
+st.markdown("Generate full-length interview assets for testing.")
 
 # INPUTS
 c1, c2 = st.columns(2)
@@ -186,7 +187,7 @@ with c2:
     requirements = st.text_input("Key Requirements", "Quest Migration, Active Directory, VMware, 20 Years Exp")
 
 if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
-    with st.status("⚙️ Generating Deep Simulation...", expanded=True) as status:
+    with st.status("⚙️ Fabricating Reality...", expanded=True) as status:
         st.write("📝 Drafting detailed Job Description...")
         st.write("👤 Inventing Candidates (Generating full CVs & Transcripts)...")
         
@@ -194,7 +195,7 @@ if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
         scenario = generate_full_scenario(job_title, industry, level, requirements)
         
         if "error" in scenario:
-            st.error(scenario['error'])
+            st.error(f"Generation Failed: {scenario['error']}")
             st.stop()
             
         st.write("🧠 Analyzing Performance...")
@@ -203,75 +204,73 @@ if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
         analysis = analyze_candidates(scenario)
         
         if "error" in analysis:
-            st.error(analysis['error'])
+            st.error(f"Analysis Failed: {analysis['error']}")
             st.stop()
         
         # 3. Merge Data
         final_data = []
         for i, cand in enumerate(scenario['candidates']):
-            an = next(item for item in analysis['analyses'] if item["id"] == cand["id"])
-            merged = {**cand, **an}
-            final_data.append(merged)
+            matching_analysis = next((item for item in analysis['analyses'] if item["id"] == cand["id"]), None)
+            
+            if matching_analysis:
+                merged = {**cand, **matching_analysis}
+                final_data.append(merged)
             
         st.session_state.sim_data = {"jd": scenario['job_description'], "results": final_data}
-        status.update(label="Simulation Complete!", state="complete", expanded=False)
+        status.update(label="Assets Generated!", state="complete", expanded=False)
 
 # RESULTS
 if st.session_state.sim_data:
     results = st.session_state.sim_data['results']
+    jd_text = st.session_state.sim_data['jd']
     
     st.divider()
     
-    # 1. COMPARISON TABLE
-    st.subheader("📊 Candidate Leaderboard")
+    # 1. DOWNLOAD CENTER (New Feature)
+    st.subheader("📂 Download Assets (For Testing)")
+    col_d1, col_d2, col_d3 = st.columns(3)
     
-    df_data = []
-    for r in results:
-        df_data.append({
-            "Name": r['name'],
-            "Profile": r['vibe'],
-            "Role Fit": r['role_fit_score'],
-            "Tech Skills": r['tech_score'],
-            "Verdict": r['verdict']
-        })
-    
-    st.dataframe(
-        pd.DataFrame(df_data),
-        column_config={
-            "Role Fit": st.column_config.ProgressColumn("Fit", format="%d", min_value=0, max_value=10),
-            "Tech Skills": st.column_config.ProgressColumn("Tech", format="%d", min_value=0, max_value=10),
-        },
-        use_container_width=True,
-        hide_index=True
-    )
+    with col_d1:
+        st.markdown("**1. The Job**")
+        st.download_button("⬇️ Download JD", jd_text, file_name="job_description.md")
+        
+    with col_d2:
+        st.markdown(f"**2. {results[0]['name']} (Strong)**")
+        st.download_button(f"⬇️ CV ({results[0]['name']})", results[0]['cv_text'], file_name=f"{results[0]['name']}_CV.md")
+        st.download_button(f"⬇️ Transcript ({results[0]['name']})", results[0]['transcript'], file_name=f"{results[0]['name']}_Transcript.md")
+
+    with col_d3:
+        st.markdown(f"**3. {results[1]['name']} (Weak)**")
+        st.download_button(f"⬇️ CV ({results[1]['name']})", results[1]['cv_text'], file_name=f"{results[1]['name']}_CV.md")
+        st.download_button(f"⬇️ Transcript ({results[1]['name']})", results[1]['transcript'], file_name=f"{results[1]['name']}_Transcript.md")
 
     st.divider()
 
-    # 2. DEEP DIVE TABS
+    # 2. ANALYSIS PREVIEW
     t_jd, t1, t2 = st.tabs(["📄 Job Description", f"👤 {results[0]['name']}", f"👤 {results[1]['name']}"])
     
     with t_jd:
-        st.markdown(st.session_state.sim_data['jd'])
+        st.markdown(jd_text)
 
     # Candidate Tabs
     tabs = [t1, t2]
     for i, tab in enumerate(tabs):
-        cand = results[i]
-        with tab:
-            c_info, c_docs = st.columns([1, 1])
-            
-            with c_info:
-                st.markdown(f"### Verdict: {cand['verdict']}")
-                st.info(f"**AI Analysis:** {cand['reasoning']}")
+        if i < len(results):
+            cand = results[i]
+            with tab:
+                c_info, c_docs = st.columns([1, 1])
                 
-                st.markdown("#### 📊 Scores")
-                st.progress(cand['role_fit_score']/10, text=f"Role Fit: {cand['role_fit_score']}/10")
-                st.progress(cand['comm_score']/10, text=f"Communication: {cand['comm_score']}/10")
-                st.progress(cand['culture_score']/10, text=f"Culture Fit: {cand['culture_score']}/10")
+                with c_info:
+                    st.markdown(f"### Verdict: {cand['verdict']}")
+                    st.info(f"**AI Analysis:** {cand['reasoning']}")
+                    
+                    st.progress(cand['role_fit_score']/10, text=f"Role Fit: {cand['role_fit_score']}/10")
+                    st.progress(cand['comm_score']/10, text=f"Communication: {cand['comm_score']}/10")
+                    st.progress(cand['culture_score']/10, text=f"Culture Fit: {cand['culture_score']}/10")
 
-            with c_docs:
-                with st.expander("📄 View Generated CV", expanded=True):
-                    st.text(cand['cv_text'])
-                
-                with st.expander("💬 View Interview Transcript", expanded=True):
-                    st.text(cand['transcript'])
+                with c_docs:
+                    with st.expander("📄 View Generated CV", expanded=False):
+                        st.text(cand['cv_text'])
+                    
+                    with st.expander("💬 View Interview Transcript", expanded=True):
+                        st.text(cand['transcript'])
