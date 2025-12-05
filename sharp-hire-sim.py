@@ -2,12 +2,15 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import io
 from anthropic import Anthropic
+from fpdf import FPDF # Requires pip install fpdf
+from docx import Document # Requires pip install python-docx
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire SIM v2.5", page_icon="🎲", layout="wide")
+st.set_page_config(page_title="Sharp Hire SIM v2.6", page_icon="🎲", layout="wide")
 
-# --- SHARP PALETTE CSS ---
+# --- CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #e0e0e0; }
@@ -21,37 +24,19 @@ st.markdown("""
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
-    /* NEON GRADIENT BUTTONS */
     div[data-testid="stButton"] button {
         background: linear-gradient(45deg, #00e5ff, #00ffab) !important;
         color: #000000 !important;
         border: none !important;
         font-weight: 800 !important;
         text-transform: uppercase;
-        transition: transform 0.2s;
     }
-    div[data-testid="stButton"] button:hover {
-        transform: scale(1.02);
-        box-shadow: 0 0 15px #00ffab;
-    }
-    
-    /* COST METRIC STYLING */
-    div[data-testid="stMetricValue"] {
-        color: #39ff14 !important; /* Neon Green */
-        font-size: 1.5rem !important;
-        font-family: 'Courier New', monospace !important;
-    }
-    div[data-testid="stMetricLabel"] {
-        color: #00e5ff !important;
-    }
-    
-    .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
+    div[data-testid="stMetricValue"] { color: #39ff14 !important; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- STATE ---
 if 'sim_data' not in st.session_state: st.session_state.sim_data = None
-if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready to Simulate."
 if 'session_cost' not in st.session_state: st.session_state.session_cost = 0.0000
 
 # --- SECRETS ---
@@ -63,10 +48,9 @@ except:
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# --- FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
 
 def track_cost(amount):
-    """Updates the session cost counter."""
     st.session_state.session_cost += amount
 
 def clean_json(text):
@@ -75,230 +59,161 @@ def clean_json(text):
     elif "```" in text: text = text.split("```")[1].split("```")[0]
     return json.loads(text)
 
+# --- FILE GENERATORS ---
+
+def create_docx(text):
+    """Converts text string to DOCX bytes."""
+    doc = Document()
+    for line in text.split('\n'):
+        doc.add_paragraph(line)
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
+def create_pdf(text):
+    """Converts text string to PDF bytes (Latin-1 safe)."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=11)
+    # Sanitize text for FPDF (simple ascii/latin replacement)
+    safe_text = text.encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 10, safe_text)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- GENERATION LOGIC ---
+
 def generate_full_scenario(job_title, industry, level, requirements):
-    """
-    Generates 1 JD and 2 DEEP Candidates.
-    Estimated Cost: $0.06 (High Output Tokens)
-    """
     prompt = f"""
-    You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario for a simulation.
-    
-    **PARAMETERS:**
-    - Role: {job_title}
-    - Industry: {industry}
-    - Level: {level}
-    - Key Reqs: {requirements}
+    Generate a detailed recruitment scenario.
+    ROLE: {job_title} | INDUSTRY: {industry} | LEVEL: {level} | REQS: {requirements}
 
-    **TASK:**
-    1. **Job Description (JD):** Write a full, professional JD with Responsibilities and Requirements.
-    2. **Create 2 Distinct Candidates:**
-       - **Candidate A (The Strong Fit):** Competent, good communicator, clear experience.
-       - **Candidate B (The Risk/Bad Fit):** Nervous, evasive, or lacks specific key skills despite a good CV.
+    TASK:
+    1. Write a professional JD.
+    2. Create 2 Candidates:
+       - Candidate A (Strong Fit)
+       - Candidate B (Risky/Bad Fit)
     
-    **CRITICAL INSTRUCTION: DETAIL LEVEL**
-    - **CV:** Do NOT summarize. Write the **FULL TEXT** of a resume. List companies, dates (e.g. 2018-2023), bullet points of projects, and skills. It must look like a text-dump of a PDF.
-    - **TRANSCRIPT:** Do NOT summarize. Write a **VERBATIM SCRIPT** of the interview. 
-        - Include "Umm", "Uh", pauses, and interruptions to make it realistic.
-        - The Recruiter should ask deep technical questions based on the requirements.
-        - The Candidate should give long, multi-sentence answers (or struggle significantly).
-        - Length: At least 20-30 exchanges per candidate.
+    FOR EACH CANDIDATE:
+    - Write a FULL CV text.
+    - Write a FULL VERBATIM TRANSCRIPT text (Interview dialogue).
 
-    **OUTPUT JSON STRUCTURE:**
+    OUTPUT JSON:
     {{
-        "job_description": "Full JD Text...",
+        "job_description": "Full JD...",
         "candidates": [
-            {{
-                "id": "A",
-                "name": "Name",
-                "vibe": "Strong Match",
-                "cv_text": "EXPERIENCE\\n\\nSenior Engineer | Tech Corp | 2019-Present\\n- Managed Active Directory...",
-                "transcript": "Recruiter: Hi, thanks for joining.\\nCandidate: Yeah, great to be here.\\nRecruiter: Tell me about your experience with Quest Migration..."
-            }},
-            {{
-                "id": "B",
-                "name": "Name",
-                "vibe": "Risky / Weak",
-                "cv_text": "...",
-                "transcript": "..."
-            }}
+            {{ "id": "A", "name": "Name", "vibe": "Strong", "cv_text": "...", "transcript": "..." }},
+            {{ "id": "B", "name": "Name", "vibe": "Weak", "cv_text": "...", "transcript": "..." }}
         ]
     }}
     """
-    
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-20250514", 
-            max_tokens=8000,
-            temperature=0.7,
+            model="claude-sonnet-4-20250514", max_tokens=8000, temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
         )
-        track_cost(0.06) # Est cost for heavy generation
+        track_cost(0.06)
         return clean_json(msg.content[0].text)
     except Exception as e:
         return {"error": str(e)}
 
-def analyze_candidates(scenario_data):
-    """
-    Analyzes the candidates using the "Sharp Hire" logic.
-    Estimated Cost: $0.03 (High Input Tokens)
-    """
-    jd = scenario_data['job_description']
-    cands = scenario_data['candidates']
-    
+def analyze_candidates(jd, cands):
     prompt = f"""
-    Analyze these 2 candidates against the Job Description.
+    Analyze these 2 candidates against the JD.
+    JD: {jd[:1500]}
+    CAND A: {cands[0]['transcript'][:3000]}
+    CAND B: {cands[1]['transcript'][:3000]}
     
-    JOB DESCRIPTION: {jd[:2000]}
-    
-    CANDIDATE DATA: {json.dumps(cands)}
-    
-    **TASK:**
-    Return a JSON with detailed scoring.
-    
-    **OUTPUT JSON:**
+    OUTPUT JSON:
     {{
         "analyses": [
-            {{
-                "id": "A",
-                "role_fit_score": 9,
-                "comm_score": 9,
-                "tech_score": 9,
-                "culture_score": 9,
-                "verdict": "Strong Hire",
-                "reasoning": "..."
-            }},
-            {{
-                "id": "B",
-                "role_fit_score": 4,
-                "comm_score": 5,
-                "tech_score": 5,
-                "culture_score": 4,
-                "verdict": "No Hire",
-                "reasoning": "..."
-            }}
+            {{ "id": "A", "role_fit_score": 9, "comm_score": 9, "tech_score": 9, "culture_score": 9, "verdict": "Hire", "reasoning": "..." }},
+            {{ "id": "B", "role_fit_score": 4, "comm_score": 5, "tech_score": 5, "culture_score": 4, "verdict": "No Hire", "reasoning": "..." }}
         ]
     }}
     """
-    
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-20250514", 
-            max_tokens=4000,
-            temperature=0.2,
+            model="claude-sonnet-4-20250514", max_tokens=4000, temperature=0.2,
             messages=[{"role": "user", "content": prompt}]
         )
-        track_cost(0.03) # Est cost for analysis
+        track_cost(0.03)
         return clean_json(msg.content[0].text)
     except Exception as e:
         return {"error": str(e)}
 
-# --- UI LAYOUT ---
+# --- UI ---
 
-# Top Bar Layout with Cost Tracker
 col_title, col_cost = st.columns([4, 1])
-
 with col_title:
     st.title("🎲 Sharp Hire: Asset Factory")
-    st.markdown("Generate full-length interview assets for testing.")
-
+    st.markdown("Generate full-length interview assets (PDF/DOCX) for testing.")
 with col_cost:
     st.metric("Session Cost", f"${st.session_state.session_cost:.4f}")
 
-# INPUTS
 c1, c2 = st.columns(2)
 with c1: 
-    job_title = st.text_input("Role Title", "Senior Infrastructure Engineer")
+    job_title = st.text_input("Role", "Senior Infrastructure Engineer")
     industry = st.text_input("Industry", "Enterprise IT")
 with c2: 
     level = st.selectbox("Seniority", ["Senior/Lead", "Executive", "Mid-Level"])
-    requirements = st.text_input("Key Requirements", "Quest Migration, Active Directory, VMware, 20 Years Exp")
+    requirements = st.text_input("Requirements", "Quest Migration, AD, VMware, 20 Years Exp")
 
 if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
-    with st.status("⚙️ Fabricating Reality...", expanded=True) as status:
-        st.write("📝 Drafting detailed Job Description...")
-        st.write("👤 Inventing Candidates (Generating full CVs & Transcripts)...")
-        
-        # 1. Generate Content
+    with st.status("⚙️ Generating Simulation Data...", expanded=True) as status:
+        st.write("📝 Creating Content...")
         scenario = generate_full_scenario(job_title, industry, level, requirements)
-        
-        if "error" in scenario:
-            st.error(f"Generation Failed: {scenario['error']}")
-            st.stop()
+        if "error" in scenario: st.error(scenario['error']); st.stop()
             
-        st.write("🧠 Analyzing Performance...")
+        st.write("🧠 Analyzing...")
+        analysis = analyze_candidates(scenario['job_description'], scenario['candidates'])
+        if "error" in analysis: st.error(analysis['error']); st.stop()
         
-        # 2. Analyze Content
-        analysis = analyze_candidates(scenario)
-        
-        if "error" in analysis:
-            st.error(f"Analysis Failed: {analysis['error']}")
-            st.stop()
-        
-        # 3. Merge Data
+        # Merge
         final_data = []
         for i, cand in enumerate(scenario['candidates']):
-            matching_analysis = next((item for item in analysis['analyses'] if item["id"] == cand["id"]), None)
-            
-            if matching_analysis:
-                merged = {**cand, **matching_analysis}
-                final_data.append(merged)
+            an = next((x for x in analysis['analyses'] if x["id"] == cand["id"]), None)
+            if an: final_data.append({**cand, **an})
             
         st.session_state.sim_data = {"jd": scenario['job_description'], "results": final_data}
-        status.update(label="Assets Generated!", state="complete", expanded=False)
-        st.rerun() # Refresh to update cost counter
+        status.update(label="Assets Ready!", state="complete", expanded=False)
+        st.rerun()
 
-# RESULTS
+# --- DOWNLOADS & RESULTS ---
 if st.session_state.sim_data:
-    results = st.session_state.sim_data['results']
-    jd_text = st.session_state.sim_data['jd']
+    res = st.session_state.sim_data['results']
+    jd_txt = st.session_state.sim_data['jd']
     
     st.divider()
+    st.subheader("📂 Download Assets (PDF / Word)")
     
-    # 1. DOWNLOAD CENTER
-    st.subheader("📂 Download Assets (For Testing)")
-    col_d1, col_d2, col_d3 = st.columns(3)
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.markdown("**1. The Job Description**")
+        st.download_button("📄 Download PDF", create_pdf(jd_txt), "JD.pdf", "application/pdf")
+        st.download_button("📝 Download Word", create_docx(jd_txt), "JD.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     
-    with col_d1:
-        st.markdown("**1. The Job**")
-        st.download_button("⬇️ Download JD", jd_text, file_name="job_description.md")
-        
-    with col_d2:
-        st.markdown(f"**2. {results[0]['name']} (Strong)**")
-        st.download_button(f"⬇️ CV ({results[0]['name']})", results[0]['cv_text'], file_name=f"{results[0]['name']}_CV.md")
-        st.download_button(f"⬇️ Transcript ({results[0]['name']})", results[0]['transcript'], file_name=f"{results[0]['name']}_Transcript.md")
+    with d2:
+        name_a = res[0]['name']
+        st.markdown(f"**2. {name_a} (Strong)**")
+        # CV A
+        st.download_button(f"📄 CV PDF", create_pdf(res[0]['cv_text']), f"{name_a}_CV.pdf", "application/pdf")
+        st.download_button(f"📝 CV Word", create_docx(res[0]['cv_text']), f"{name_a}_CV.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        # Transcript A
+        st.download_button(f"💬 Transcript PDF", create_pdf(res[0]['transcript']), f"{name_a}_Transcript.pdf", "application/pdf")
+        st.download_button(f"💬 Transcript Word", create_docx(res[0]['transcript']), f"{name_a}_Transcript.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
-    with col_d3:
-        st.markdown(f"**3. {results[1]['name']} (Weak)**")
-        st.download_button(f"⬇️ CV ({results[1]['name']})", results[1]['cv_text'], file_name=f"{results[1]['name']}_CV.md")
-        st.download_button(f"⬇️ Transcript ({results[1]['name']})", results[1]['transcript'], file_name=f"{results[1]['name']}_Transcript.md")
+    with d3:
+        name_b = res[1]['name']
+        st.markdown(f"**3. {name_b} (Weak)**")
+        # CV B
+        st.download_button(f"📄 CV PDF", create_pdf(res[1]['cv_text']), f"{name_b}_CV.pdf", "application/pdf")
+        st.download_button(f"📝 CV Word", create_docx(res[1]['cv_text']), f"{name_b}_CV.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        # Transcript B
+        st.download_button(f"💬 Transcript PDF", create_pdf(res[1]['transcript']), f"{name_b}_Transcript.pdf", "application/pdf")
+        st.download_button(f"💬 Transcript Word", create_docx(res[1]['transcript']), f"{name_b}_Transcript.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     st.divider()
-
-    # 2. ANALYSIS PREVIEW
-    t_jd, t1, t2 = st.tabs(["📄 Job Description", f"👤 {results[0]['name']}", f"👤 {results[1]['name']}"])
     
-    with t_jd:
-        st.markdown(jd_text)
-
-    # Candidate Tabs
-    tabs = [t1, t2]
-    for i, tab in enumerate(tabs):
-        if i < len(results):
-            cand = results[i]
-            with tab:
-                c_info, c_docs = st.columns([1, 1])
-                
-                with c_info:
-                    st.markdown(f"### Verdict: {cand['verdict']}")
-                    st.info(f"**AI Analysis:** {cand['reasoning']}")
-                    
-                    st.progress(cand['role_fit_score']/10, text=f"Role Fit: {cand['role_fit_score']}/10")
-                    st.progress(cand['comm_score']/10, text=f"Communication: {cand['comm_score']}/10")
-                    st.progress(cand['culture_score']/10, text=f"Culture Fit: {cand['culture_score']}/10")
-
-                with c_docs:
-                    with st.expander("📄 View Generated CV", expanded=False):
-                        st.text(cand['cv_text'])
-                    
-                    with st.expander("💬 View Interview Transcript", expanded=True):
-                        st.text(cand['transcript'])
+    # Leaderboard
+    df_data = [{"Name": r['name'], "Role Fit": r['role_fit_score'], "Tech": r['tech_score'], "Verdict": r['verdict']} for r in res]
+    st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
