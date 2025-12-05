@@ -5,7 +5,7 @@ import os
 from anthropic import Anthropic
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire SIM v2.3", page_icon="🎲", layout="wide")
+st.set_page_config(page_title="Sharp Hire SIM v2.5", page_icon="🎲", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -34,6 +34,17 @@ st.markdown("""
         transform: scale(1.02);
         box-shadow: 0 0 15px #00ffab;
     }
+    
+    /* COST METRIC STYLING */
+    div[data-testid="stMetricValue"] {
+        color: #39ff14 !important; /* Neon Green */
+        font-size: 1.5rem !important;
+        font-family: 'Courier New', monospace !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #00e5ff !important;
+    }
+    
     .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
 </style>
 """, unsafe_allow_html=True)
@@ -41,6 +52,7 @@ st.markdown("""
 # --- SESSION STATE ---
 if 'sim_data' not in st.session_state: st.session_state.sim_data = None
 if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready to Simulate."
+if 'session_cost' not in st.session_state: st.session_state.session_cost = 0.0000
 
 # --- SECRETS ---
 try:
@@ -53,6 +65,10 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # --- FUNCTIONS ---
 
+def track_cost(amount):
+    """Updates the session cost counter."""
+    st.session_state.session_cost += amount
+
 def clean_json(text):
     text = text.strip()
     if "```json" in text: text = text.split("```json")[1].split("```")[0]
@@ -61,7 +77,8 @@ def clean_json(text):
 
 def generate_full_scenario(job_title, industry, level, requirements):
     """
-    Generates 1 JD and 2 DEEP Candidates (Quality over Quantity).
+    Generates 1 JD and 2 DEEP Candidates.
+    Estimated Cost: $0.06 (High Output Tokens)
     """
     prompt = f"""
     You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario for a simulation.
@@ -115,6 +132,7 @@ def generate_full_scenario(job_title, industry, level, requirements):
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
         )
+        track_cost(0.06) # Est cost for heavy generation
         return clean_json(msg.content[0].text)
     except Exception as e:
         return {"error": str(e)}
@@ -122,6 +140,7 @@ def generate_full_scenario(job_title, industry, level, requirements):
 def analyze_candidates(scenario_data):
     """
     Analyzes the candidates using the "Sharp Hire" logic.
+    Estimated Cost: $0.03 (High Input Tokens)
     """
     jd = scenario_data['job_description']
     cands = scenario_data['candidates']
@@ -168,14 +187,22 @@ def analyze_candidates(scenario_data):
             temperature=0.2,
             messages=[{"role": "user", "content": prompt}]
         )
+        track_cost(0.03) # Est cost for analysis
         return clean_json(msg.content[0].text)
     except Exception as e:
         return {"error": str(e)}
 
 # --- UI LAYOUT ---
 
-st.title("🎲 Sharp Hire: Asset Factory")
-st.markdown("Generate full-length interview assets for testing.")
+# Top Bar Layout with Cost Tracker
+col_title, col_cost = st.columns([4, 1])
+
+with col_title:
+    st.title("🎲 Sharp Hire: Asset Factory")
+    st.markdown("Generate full-length interview assets for testing.")
+
+with col_cost:
+    st.metric("Session Cost", f"${st.session_state.session_cost:.4f}")
 
 # INPUTS
 c1, c2 = st.columns(2)
@@ -218,6 +245,7 @@ if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
             
         st.session_state.sim_data = {"jd": scenario['job_description'], "results": final_data}
         status.update(label="Assets Generated!", state="complete", expanded=False)
+        st.rerun() # Refresh to update cost counter
 
 # RESULTS
 if st.session_state.sim_data:
@@ -226,7 +254,7 @@ if st.session_state.sim_data:
     
     st.divider()
     
-    # 1. DOWNLOAD CENTER (New Feature)
+    # 1. DOWNLOAD CENTER
     st.subheader("📂 Download Assets (For Testing)")
     col_d1, col_d2, col_d3 = st.columns(3)
     
