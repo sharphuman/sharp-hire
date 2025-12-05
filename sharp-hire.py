@@ -1,29 +1,16 @@
 import streamlit as st
-import streamlit.components.v1 as components
-import requests
-import jwt
-import datetime
+import pandas as pd
 import json
-import io
-import urllib.parse
-import base64
-import random
+import os
 from anthropic import Anthropic
+from openai import OpenAI
 from pypdf import PdfReader
 from docx import Document
-from openai import OpenAI
-import os
 
-# --- SAFE IMPORT FOR TEXTSTAT ---
-try:
-    import textstat
-    textstat_installed = True
-except ImportError:
-    textstat_installed = False
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Sharp Hire v1.2", page_icon="🎯", layout="wide")
 
-# --- CONFIGURATION & NEON THEME ---
-st.set_page_config(page_title="Elite AI Blog Agent v0.14.5", page_icon="🧠", layout="wide")
-
+# --- SHARP PALETTE CSS (NEON/BLACK THEME) ---
 st.markdown("""
 <style>
     /* MAIN BACKGROUND */
@@ -42,8 +29,11 @@ st.markdown("""
         background-color: #161b22;
         border: 2px dashed #00e5ff; 
         border-radius: 15px;
-        min-height: 160px !important; 
+        min-height: 200px !important; 
         display: flex; align-items: center; justify-content: center;
+    }
+    div[data-testid="stFileUploader"] section:hover {
+        border-color: #00ffab; /* Green on hover */
     }
 
     /* HEADERS */
@@ -51,535 +41,307 @@ st.markdown("""
         background: -webkit-linear-gradient(45deg, #00e5ff, #d500f9);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        font-family: 'Helvetica Neue', sans-serif;
     }
     
-    /* GRADIENT START BUTTON */
+    /* ACTION BUTTON (Cyan to Green Gradient) */
     div[data-testid="stButton"] button {
         background: linear-gradient(45deg, #00e5ff, #00ffab) !important;
         color: #000000 !important;
         border: none !important;
         font-weight: 800 !important;
-        font-size: 1.2rem !important;
+        font-size: 1.1rem !important;
         text-transform: uppercase;
         transition: all 0.3s ease;
     }
     div[data-testid="stButton"] button:hover {
         box-shadow: 0 0 20px #00ffab;
         transform: scale(1.02);
-        color: #000000 !important;
+    }
+
+    /* METRIC CARDS */
+    div[data-testid="stMetricValue"] {
+        color: #00ffab !important; /* Neon Green Score */
     }
     
-    .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
+    .score-card {
+        background-color: #1c1c1c;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 5px solid #d500f9;
+        margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE ---
-if 'log_events' not in st.session_state: st.session_state.log_events = []
-if 'current_workflow_status' not in st.session_state: st.session_state.current_workflow_status = "Ready."
-if 'costs' not in st.session_state: st.session_state.costs = {"Anthropic": 0.0, "OpenAI": 0.0, "Perplexity": 0.0}
-if 'elite_blog_v8' not in st.session_state: st.session_state.elite_blog_v8 = None
-if 'transcript_context' not in st.session_state: st.session_state.transcript_context = False
-if 'final_title' not in st.session_state: st.session_state.final_title = ""
-if 'final_content' not in st.session_state: st.session_state.final_content = ""
-if 'final_excerpt' not in st.session_state: st.session_state.final_excerpt = ""
-if 'seo_keywords' not in st.session_state: st.session_state.seo_keywords = ""
-if 'last_claude_model' not in st.session_state: st.session_state.last_claude_model = "claude-sonnet-4-20250514"
-if 'claude_model_selection' not in st.session_state: st.session_state.claude_model_selection = "claude-sonnet-4-20250514"
-if 'headline_ideas' not in st.session_state: st.session_state.headline_ideas = ""
+if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
+if 'transcript_text' not in st.session_state: st.session_state.transcript_text = ""
+if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready."
 
-# --- SECRETS ---
+# --- SECRETS LOADING ---
 try:
-    GHOST_ADMIN_KEY = st.secrets.get("GHOST_ADMIN_API_KEY") or os.environ["GHOST_ADMIN_API_KEY"]
-    GHOST_API_URL = (st.secrets.get("GHOST_API_URL") or os.environ["GHOST_API_URL"]).rstrip('/')
-    PPLX_API_KEY = st.secrets.get("PERPLEXITY_API_KEY") or os.environ["PERPLEXITY_API_KEY"]
-    ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY") or os.environ["ANTHROPIC_API_KEY"]
-    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.environ["OPENAI_API_KEY"]
-except KeyError as e:
-    st.error(f"❌ Missing Secret: {e}. Please set all keys.")
+    ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+except:
+    st.error("❌ Missing API Keys. Please set ANTHROPIC_API_KEY and OPENAI_API_KEY.")
     st.stop()
 
-def add_log(message):
-    timestamp = datetime.datetime.now().strftime('%H:%M:%S')
-    st.session_state.log_events.insert(0, f"[{timestamp}] {message}")
-
-def track_cost(provider, amount):
-    st.session_state.costs[provider] += amount
-
 # --- CLIENTS ---
-@st.cache_resource
-def get_clients():
-    pplx = OpenAI(api_key=PPLX_API_KEY, base_url="https://api.perplexity.ai")
-    anth = Anthropic(api_key=ANTHROPIC_API_KEY)
-    try: oai = OpenAI(api_key=OPENAI_API_KEY)
-    except: oai = None
-    return pplx, anth, oai
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-researcher, writer, openai_client = get_clients()
-openai_client_is_valid = openai_client is not None
+# --- CORE FUNCTIONS ---
 
-# --- CUSTOM CELEBRATION ENGINE ---
-def celebrate_with_logos():
-    """
-    Looks for logo_cyan.png, logo_green.png, logo_purple.png in the root folder.
-    If found, floats them up. If not, floats neon squares.
-    """
+def extract_text_from_file(file):
+    """Router to extract text based on file type (Audio vs Doc)."""
+    file_type = file.name.split('.')[-1].lower()
     
-    # 1. Define the files you want to use
-    logo_files = ["logo_cyan.png", "logo_green.png", "logo_purple.png", "logo_white.png"]
+    # 1. AUDIO/VIDEO -> WHISPER
+    if file_type in ['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'mpga']:
+        return transcribe_audio(file)
     
-    # 2. Helper to load image as Base64 (so HTML can read it)
-    def get_img_tag(filename):
-        if os.path.exists(filename):
-            with open(filename, "rb") as f:
-                data = f.read()
-                b64 = base64.b64encode(data).decode()
-                return f'<img src="data:image/png;base64,{b64}" style="width: 60px; opacity: 0.9;">'
-        return None
-
-    # 3. Generate Particles
-    particles = []
-    found_logos = False
-    
-    for _ in range(40): # Number of particles
-        left = random.randint(0, 95)
-        delay = random.uniform(0, 2)
-        duration = random.uniform(3, 6)
-        
-        # Try to pick a random logo
-        chosen_file = random.choice(logo_files)
-        img_tag = get_img_tag(chosen_file)
-        
-        if img_tag:
-            found_logos = True
-            content = img_tag
-        else:
-            # Fallback: Neon Square if no logo file found
-            color = random.choice(["#00e5ff", "#39ff14", "#d500f9"])
-            content = f'<div style="width: 20px; height: 20px; background-color: {color}; transform: rotate(45deg); box-shadow: 0 0 10px {color};"></div>'
-
-        particle_html = f"""
-        <div style="position: fixed; left: {left}%; bottom: -100px; 
-                    animation: floatUp {duration}s ease-in {delay}s forwards; 
-                    z-index: 9999;">
-            {content}
-        </div>
-        """
-        particles.append(particle_html)
-
-    # 4. Inject CSS Animation Keyframes & HTML
-    full_html = f"""
-    <style>
-        @keyframes floatUp {{
-            0% {{ bottom: -100px; opacity: 1; transform: rotate(0deg); }}
-            100% {{ bottom: 110vh; opacity: 0; transform: rotate(360deg); }}
-        }}
-    </style>
-    {''.join(particles)}
-    """
-    st.markdown(full_html, unsafe_allow_html=True)
-
-# --- HELPERS ---
-def extract_text(file):
-    try:
-        if file.name.endswith('.pdf'):
+    # 2. PDF
+    elif file_type == 'pdf':
+        try:
             reader = PdfReader(file)
-            return "\n".join([p.extract_text() for p in reader.pages])
-        elif file.name.endswith('.docx'):
-            return "\n".join([p.text for p in Document(file).paragraphs])
-        elif file.name.endswith('.txt') or file.name.endswith('.md'):
-            return file.read().decode("utf-8")
-        return ""
-    except: return "Error reading file."
+            return "\n".join([page.extract_text() for page in reader.pages])
+        except Exception as e:
+            return f"Error reading PDF: {e}"
+            
+    # 3. DOCX
+    elif file_type == 'docx':
+        try:
+            doc = Document(file)
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            return f"Error reading DOCX: {e}"
+            
+    # 4. TEXT
+    elif file_type in ['txt', 'md']:
+        return file.read().decode("utf-8")
+        
+    return "Unsupported file format."
 
 def transcribe_audio(file):
-    if not openai_client_is_valid: return "OpenAI Key Missing."
+    """Transcribes audio using OpenAI Whisper."""
     try:
-        transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=file)
-        track_cost("OpenAI", 0.06)
+        transcript = openai_client.audio.transcriptions.create(
+            model="whisper-1", 
+            file=file
+        )
         return transcript.text
     except Exception as e:
-        if "413" in str(e): return "Error: File >25MB (OpenAI Limit)."
-        return f"Error: {e}"
+        if "413" in str(e): return "Error: Audio file exceeds 25MB limit. Please compress or split."
+        return f"Whisper Error: {str(e)}"
 
-def generate_social_link(text, platform):
-    if platform == "twitter": safe = urllib.parse.quote(text[:2500]) 
-    elif platform == "linkedin": safe = urllib.parse.quote(text[:2000])
-    elif platform == "reddit": safe = urllib.parse.quote(text[:3000])
+def analyze_call(transcript, mode):
+    """Main Analysis Engine using Claude 3.5 Sonnet."""
     
-    if platform == "twitter": return f"https://twitter.com/intent/tweet?text={safe}"
-    if platform == "linkedin": return f"https://www.linkedin.com/feed/?shareActive=true&text={safe}"
-    if platform == "reddit": return f"https://www.reddit.com/submit?selftext=true&title=New%20Post&text={safe}"
-    return "#"
+    detail_instruction = "Provide detailed feedback." if mode == "Deep Analysis" else "Provide high-level bullet points."
 
-# --- AGENTS ---
-
-def agent_headlines(topic):
-    add_log("Generating Headlines...")
-    try:
-        res = researcher.chat.completions.create(model="sonar", messages=[{"role": "user", "content": f"Generate 5 engaging, helpful blog headlines for the topic: '{topic}'. Do not use clickbait like 'Death of'. Be professional and inviting."}])
-        track_cost("Perplexity", 0.005)
-        return res.choices[0].message.content
-    except: return "Error generating headlines."
-
-def agent_seo(topic):
-    add_log("SEO: Analyzing...")
-    try:
-        res = researcher.chat.completions.create(model="sonar", messages=[{"role": "user", "content": f"Suggest 5-7 high-impact SEO keywords for: {topic}. Comma separated."}])
-        track_cost("Perplexity", 0.005)
-        return res.choices[0].message.content
-    except: return ""
-
-def agent_research(topic, context):
-    add_log("Agent 1: Researching...")
-    sys_prompt = "You are a Fact-Checking Researcher." if context else "You are an elite researcher."
-    try:
-        res = researcher.chat.completions.create(model="sonar-pro", messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"Research: {topic}"}])
-        track_cost("Perplexity", 0.02)
-        return res.choices[0].message.content
-    except: return None
-
-def clean_json_response(txt):
-    txt = txt.strip()
-    if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
-    elif "```" in txt: txt = txt.split("```")[1].split("```")[0]
-    return txt.strip()
-
-def agent_writer(topic, headline_hint, research, style, tone, keywords, audience, context_txt, model):
-    add_log(f"Agent 2: Writing...")
+    system_prompt = f"""
+    You are an expert Talent Acquisition Coach and Technical Hiring Manager.
+    Your task is to analyze a transcript of an interview call between a **Recruiter** and a **Candidate**.
     
-    headline_inst = ""
-    if headline_hint:
-        headline_inst = f"MANDATORY HEADLINE: You MUST use this exact headline or a close variation: '{headline_hint}'"
+    **CONTEXT:**
+    If the transcript does not explicitly label speakers, you must INFER who is who based on context.
 
-    prompt = f"""
-    You are a world-class Ghostwriter and Editor. Write a helpful, high-quality blog post.
-    
-    **STRATEGY:**
-    - TOPIC: "{topic}"
-    - {headline_inst}
-    - AUDIENCE: {audience}
-    - TONE: {tone}
-    - KEYWORDS: {keywords}
-    
-    **DATA SOURCES:**
-    - RESEARCH: {research}
-    - CONTEXT FILE: {context_txt[:40000] if context_txt else "None"}
+    **TASK:**
+    Analyze the call and output a valid JSON object.
+    {detail_instruction}
 
-    *** 🚨 RULES OF ENGAGEMENT 🚨 ***
-    1. **PUNCTUATION:** **NEVER USE LONG HYPHENS (EM-DASHES —)**. Structure your sentences naturally so they aren't needed. Use commas or periods.
-    2. **BOLDING:** Do **NOT** use bold text inside paragraphs. Save bolding for Headers (H2/H3) only.
-    3. **PRIVACY:** Generalize all anecdotes. Use "Industry trends show..." instead of "Bob said...". Keep it industry-agnostic.
-    4. **NO INLINE LINKS:** Do not distract the reader. List sources at the bottom.
-    5. **HUMAN FLOW:** Write like a human. Varied sentence structure. Warm but professional.
-    
-    **OUTPUT FORMAT:**
-    Return ONLY a valid JSON object with keys: "title", "meta_title", "meta_description", "excerpt", "html_content".
+    **SCORING CRITERIA (1-10 Scale):**
+    - 1-3: Poor / Red Flag
+    - 4-6: Average / OK
+    - 7-8: Good / Strong
+    - 9-10: Exceptional / Elite
+
+    **OUTPUT JSON STRUCTURE:**
+    {{
+        "call_summary": ["Bullet 1", "Bullet 2", "Bullet 3"],
+        "candidate": {{
+            "name": "Inferred Name or 'Candidate'",
+            "scores": {{
+                "role_fit": int,
+                "communication": int,
+                "culture_fit": int,
+                "motivation": int,
+                "technical_proficiency": int
+            }},
+            "technical_explanation": "Short text explaining the technical score.",
+            "strengths": ["..."],
+            "improvements": ["..."],
+            "notable_moments": ["Quote or moment..."]
+        }},
+        "recruiter": {{
+            "scores": {{
+                "call_structure": int,
+                "question_quality": int,
+                "candidate_experience": int
+            }},
+            "coaching_feedback": ["..."],
+            "strengths": ["..."]
+        }}
+    }}
     """
-    try:
-        msg = writer.messages.create(model=model, max_tokens=8000, temperature=0.7, messages=[{"role": "user", "content": prompt}])
-        track_cost("Anthropic", 0.03)
-        return json.loads(clean_json_response(msg.content[0].text))
-    except Exception as e:
-        add_log(f"Writer Error: {e}")
-        return None
 
-def agent_socials(blog_html, model):
-    add_log("Agent 3: Creating Socials...")
-    clean_text = blog_html.replace("<p>", "").replace("</p>", "\n")[:15000]
-    prompt = f"""
-    Create social posts based on this BLOG:
-    {clean_text}
-    
-    1. LinkedIn: Professional, bullets.
-    2. Twitter/X: THREAD (3-5 tweets). Tweet 1: Hook. Last: CTA.
-    3. Reddit: Engaging Title + Body.
-    
-    IMPORTANT: Return ONLY valid JSON.
-    OUTPUT: JSON with keys: "linkedin", "twitter_thread" (Array of strings), "reddit".
-    """
-    try:
-        msg = writer.messages.create(model=model, max_tokens=2000, temperature=0.7, messages=[{"role": "user", "content": prompt}])
-        track_cost("Anthropic", 0.01)
-        return json.loads(clean_json_response(msg.content[0].text))
-    except: return {"linkedin": "", "twitter_thread": [], "reddit": ""}
+    # Safety truncate
+    user_message = f"Here is the transcript:\n\n{transcript[:60000]}"
 
-def agent_artist(topic, tone, audience, custom_prompt=None):
-    add_log("Agent 4: Generating Art...")
-    if not openai_client_is_valid: return None
-    
-    base_prompt = custom_prompt if custom_prompt else f"A visualization of {topic}"
-    visual_style = "High-end editorial photography, shallow depth of field, Leica M11 style."
-    if "Teenager" in audience or "Child" in audience: visual_style = "Vibrant 3D render, Pixar-style."
-    elif "Technical" in tone: visual_style = "Isometric data art, matte black background."
-
-    full_prompt = f"{base_prompt}. Style: {visual_style}. No text. Aspect Ratio: 16:9."
     try:
-        res = openai_client.images.generate(model="dall-e-3", prompt=full_prompt, size="1024x1024", quality="standard", n=1)
-        track_cost("OpenAI", 0.04)
-        return res.data[0].url
-    except: return None
-
-def agent_refine(data, feedback, model):
-    add_log("Agent 5: Refining...")
-    prompt = f"""
-    Refine this blog post.
-    CURRENT DATA: {json.dumps(data)}
-    FEEDBACK: {feedback}
-    RULES: Keep HTML format. No Emojis. No Em-dashes. No Bold in paragraphs.
-    OUTPUT: JSON with keys title, meta_title, meta_description, excerpt, html_content.
-    """
-    try:
-        msg = writer.messages.create(model=model, max_tokens=8000, temperature=0.4, messages=[{"role": "user", "content": prompt}])
-        track_cost("Anthropic", 0.02)
-        return json.loads(clean_json_response(msg.content[0].text))
-    except: return None
-
-def upload_ghost(data, img_url, tags):
-    add_log("Publishing to Ghost...")
-    try:
-        id, sec = GHOST_ADMIN_KEY.split(':')
-        iat = int(datetime.datetime.now().timestamp())
-        token = jwt.encode({'iat': iat, 'exp': iat+300, 'aud': '/admin/'}, bytes.fromhex(sec), algorithm='HS256', headers={'kid': id})
+        message = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-latest",
+            max_tokens=4000,
+            temperature=0.2,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}]
+        )
         
-        final_img = img_url
-        if img_url and "oaidalleapiprod" in img_url:
-            img_data = requests.get(img_url).content
-            files = {'file': (f"img_{iat}.png", img_data, 'image/png')}
-            up_res = requests.post(f"{GHOST_API_URL}/ghost/api/admin/images/upload/", headers={'Authorization': f'Ghost {token}'}, files=files)
-            if up_res.status_code == 201: final_img = up_res.json()['images'][0]['url']
+        response_text = message.content[0].text
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0]
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0]
+            
+        return json.loads(response_text)
 
-        safe_excerpt = data['excerpt'][:300] if data['excerpt'] else ""
-        body = {
-            "posts": [{
-                "title": data['title'], 
-                "html": data['html_content'], 
-                "feature_image": final_img, 
-                "custom_excerpt": safe_excerpt, 
-                "status": "draft", 
-                "tags": [{"name": t} for t in tags], 
-                "meta_title": data.get('meta_title'), 
-                "meta_description": data.get('meta_description')
-            }]
-        }
-        res = requests.post(f"{GHOST_API_URL}/ghost/api/admin/posts/?source=html", json=body, headers={'Authorization': f'Ghost {token}'})
-        return res.status_code == 201
     except Exception as e:
-        add_log(f"Ghost Error: {e}")
-        return False
+        return {"error": str(e)}
+
+def render_neon_progress(label, score, max_score=10):
+    """Custom HTML/CSS Progress Bar for the Sharp Look"""
+    percentage = (score / max_score) * 100
+    color = "#ff4b4b" # Red
+    if score >= 4: color = "#ffa700" # Orange/Yellow
+    if score >= 7: color = "#39ff14" # Neon Green
+    if score >= 9: color = "#00e5ff" # Cyan (Elite)
+
+    st.markdown(f"""
+    <div style="margin-bottom: 15px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+            <span style="color: #e0e0e0; font-weight: 600;">{label}</span>
+            <span style="color: {color}; font-weight: bold;">{score}/10</span>
+        </div>
+        <div style="background-color: #333; border-radius: 5px; height: 10px; width: 100%;">
+            <div style="background-color: {color}; width: {percentage}%; height: 100%; border-radius: 5px; box-shadow: 0 0 8px {color};"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # --- UI LAYOUT ---
 
-st.title("🧠 Elite AI Blog Agent v0.14.5")
-st.markdown("Research by **Perplexity** | Writing by **Claude** | Art by **DALL-E**")
+st.title("🎯 Sharp Hire v1.2")
+st.markdown("Automated Interview Intelligence & Coaching")
 
-# --- 3-COLUMN LAYOUT ---
-col1, col2, col3 = st.columns([1, 1, 1])
+# --- 2 COLUMN LAYOUT (Input | Status) ---
+col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.markdown("### ✍️ Style")
-    style_sample = st.text_area("Voice Mimicry", height=200, placeholder="Paste text here...")
+    st.markdown("### 📎 Upload Interview")
+    uploaded_file = st.file_uploader(
+        "Drag and drop call recording or transcript...", 
+        type=['mp3', 'm4a', 'wav', 'mp4', 'mpeg', 'pdf', 'docx', 'txt'], 
+        label_visibility="collapsed"
+    )
 
 with col2:
-    st.write("")
-    st.write("")
-    st.markdown("### 📎 Context")
-    uploaded_file = st.file_uploader("", type=['txt','pdf','docx','mp3','mp4'], label_visibility="collapsed")
-
-with col3:
-    st.markdown("### 🎯 Target")
-    tone_options = [
-        "Conversational (Friendly, relatable, uses contractions)",
-        "Technical (Precise, industry jargon, dense)",
-        "Professional (Corporate, authoritative, accessible)",
-        "Witty (Clever, light humor, entertaining)",
-        "Storyteller (Narrative arc, emotive, scene-setting)",
-        "Journalistic (Objective, fact-based, inverted pyramid)"
-    ]
-    tone_setting = st.selectbox("Tone", tone_options)
-    
-    aud_options = [
-        "General Public (Accessible, clear, no jargon)",
-        "Developer (Technical depth, code concepts)",
-        "Executive (Strategic, high-level summary, ROI focus)",
-        "Recruiter (Skills focus, career progression)",
-        "Grand Parent (Simple metaphors, respectful, patient)",
-        "Teenager (Fast-paced, authentic, minimal slang)",
-        "Child (Simple words, exciting analogies, educational)",
-        "Hobbyist (Passionate, detailed, practical tips)",
-        "CEO (Concise, strategic, bottom-line upfront)"
-    ]
-    audience_setting = st.selectbox("Audience", aud_options)
-    
-    st.markdown("#### 📜 Activity Log")
-    st.text_area("", value="\n".join(st.session_state.log_events), height=100, disabled=True, key="logs_display")
-
-# --- TOPIC SECTION ---
-st.markdown("---")
-st.markdown("### 💡 Topic")
-topic = st.text_area("", height=100, placeholder="Enter prompt...", label_visibility="collapsed")
-
-# ROW 2: HEADLINE & IMAGE PROMPT
-c_head, c_img = st.columns(2)
-with c_head:
-    headline_hint = st.text_input("Suggested Headline (Optional)", placeholder="Enter a headline to guide the AI...")
-with c_img:
-    img_prompt = st.text_input("Custom Image Prompt (Optional)", placeholder="Describe the image... (Leave empty for auto-gen)")
-
-# ROW 3: SEO
-st.markdown("### 🔑 SEO Keywords")
-c_seo_txt, c_seo_btn = st.columns([4, 1])
-with c_seo_txt:
-    keywords = st.text_area("", value=st.session_state.seo_keywords, height=68, label_visibility="collapsed")
-    st.session_state.seo_keywords = keywords
-with c_seo_btn:
-    if st.button("✨ Choose For Me"):
-        if topic: st.session_state.seo_keywords = agent_seo(topic)
-
-# --- STATUS & COST ---
-st.markdown("---")
-s1, s2 = st.columns(2)
-with s1:
-    st.info(f"**Status:** {st.session_state.current_workflow_status}")
-with s2:
-    with st.expander("💰 Costs & Settings", expanded=False):
-        st.write(st.session_state.costs)
-        st.selectbox("Model:", ["claude-sonnet-4-20250514", "claude-3-5-sonnet", "claude-3-opus"], key="claude_model_selection")
+    st.markdown("### ⚙️ Config")
+    analysis_mode = st.radio("Depth", ["Light (Fast)", "Deep Analysis"], index=1)
+    st.info(st.session_state.processing_status)
 
 # START BUTTON
 st.write("")
-if st.button("Start Sharp Bloggling", type="primary", use_container_width=True):
-    if not topic:
-        st.warning("Please enter a topic.")
-    else:
-        st.session_state.log_events = [] 
-        add_log("Workflow Initialized.")
-        st.session_state.current_workflow_status = "Processing Context..."
-        st.session_state.last_claude_model = st.session_state.claude_model_selection
-        st.session_state.transcript_context = False
-        transcript_txt = None
-        
-        if uploaded_file:
-            if uploaded_file.name.endswith(('.mp3','.mp4','.wav','.m4a')): transcript_txt = transcribe_audio(uploaded_file)
-            else: transcript_txt = extract_text(uploaded_file)
-            if transcript_txt and "Error" not in transcript_txt:
-                st.session_state.transcript_context = True
-                add_log("Context Loaded.")
-        
-        st.session_state.current_workflow_status = "Researching..."
-        research_data = agent_research(topic, st.session_state.transcript_context)
-        
-        if research_data:
-            st.session_state.current_workflow_status = "Drafting..."
-            blog = agent_writer(topic, headline_hint, research_data, style_sample, tone_setting, keywords, audience_setting, transcript_txt, st.session_state.claude_model_selection)
-            
-            if blog:
-                st.session_state.elite_blog_v8 = blog
-                st.session_state.final_title = blog['title']
-                st.session_state.final_content = blog['html_content']
-                st.session_state.final_excerpt = blog['excerpt']
-                
-                st.session_state.current_workflow_status = "Socials & Art..."
-                st.session_state.elite_socials = agent_socials(blog['html_content'], st.session_state.claude_model_selection)
-                img = agent_artist(topic, tone_setting, audience_setting, custom_prompt=img_prompt)
-                if img: st.session_state.elite_image_v8 = img
-                
-                st.session_state.current_workflow_status = "Done! Review below."
-                st.rerun()
-
-# --- PREVIEW & REFINE ---
-if st.session_state.elite_blog_v8:
-    st.divider()
-    t1, t2 = st.tabs(["📝 Review & Refine", "📱 Social Media"])
+if st.button("Start Sharp Analysis", type="primary", use_container_width=True):
     
-    with t1:
-        st.subheader("👁️ Preview")
+    if uploaded_file:
+        st.session_state.processing_status = "Processing File..."
+        st.session_state.analysis_result = None
+        st.rerun()
+    
+    if uploaded_file:
+        # 1. EXTRACT / TRANSCRIBE
+        with st.spinner("🎧 Reading / Transcribing..."):
+            extracted_text = extract_text_from_file(uploaded_file)
+            st.session_state.transcript_text = extracted_text
         
-        c_preview_img, c_preview_html = st.columns(2)
+        if "Error" in extracted_text or "Unsupported" in extracted_text:
+            st.error(extracted_text)
+            st.session_state.processing_status = "Error."
+        else:
+            # 2. ANALYZE
+            st.session_state.processing_status = "Analyzing Intelligence..."
+            with st.spinner("🧠 Analyzing behaviors & skills..."):
+                result = analyze_call(extracted_text, analysis_mode)
+                st.session_state.analysis_result = result
+                st.session_state.processing_status = "Analysis Complete."
+                st.rerun()
+    else:
+        st.warning("Please upload a file first.")
 
-        with c_preview_img:
-            if st.session_state.get('elite_image_v8'):
-                st.image(st.session_state.elite_image_v8, use_container_width=True)
-                with st.expander("🎨 Regenerate Image"):
-                    regen_prompt = st.text_input("New Image Prompt", placeholder="Describe desired image...", key="regen_box")
-                    if st.button("Regenerate Art", key="regen_btn"):
-                        with st.spinner("Painting..."):
-                            new_url = agent_artist(topic, tone_setting, audience_setting, custom_prompt=regen_prompt)
-                            if new_url: 
-                                st.session_state.elite_image_v8 = new_url
-                                st.rerun()
+# --- RESULTS DASHBOARD ---
+if st.session_state.analysis_result:
+    res = st.session_state.analysis_result
+    
+    if "error" in res:
+        st.error(f"Analysis Failed: {res['error']}")
+    else:
+        st.divider()
+        col_cand, col_rec = st.columns(2)
+        
+        # --- CANDIDATE CARD ---
+        with col_cand:
+            st.markdown(f"### 👤 Candidate: {res['candidate']['name']}")
+            with st.container(border=True):
+                c_scores = res['candidate']['scores']
+                
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    st.metric("Tech Score", f"{c_scores['technical_proficiency']}/10")
+                with c2:
+                    st.caption(f"**Insight:** {res['candidate']['technical_explanation']}")
+                
+                st.divider()
+                render_neon_progress("Role Fit", c_scores['role_fit'])
+                render_neon_progress("Communication", c_scores['communication'])
+                render_neon_progress("Culture Fit", c_scores['culture_fit'])
+                render_neon_progress("Motivation", c_scores['motivation'])
+            
+            with st.expander("📝 Candidate Feedback & Strengths", expanded=True):
+                st.markdown("**✅ Strengths**")
+                for s in res['candidate']['strengths']: st.markdown(f"- {s}")
+                st.markdown("**⚠️ Areas to Improve**")
+                for i in res['candidate']['improvements']: st.markdown(f"- {i}")
 
-        with c_preview_html:
-             html_preview = f"""
-            <div style="background-color: white; color: black; padding: 40px; border-radius: 10px; font-family: sans-serif;">
-                <h1 style="color: black;">{st.session_state.final_title}</h1>
-                <p><em>{st.session_state.final_excerpt}</em></p>
-                <hr>
-                {st.session_state.final_content}
-            </div>
-            """
-             components.html(html_preview, height=600, scrolling=True)
+        # --- RECRUITER CARD ---
+        with col_rec:
+            st.markdown("### 🎧 Recruiter Performance")
+            with st.container(border=True):
+                r_scores = res['recruiter']['scores']
+                avg_rec = round(sum(r_scores.values()) / 3, 1)
+                st.metric("Recruiter Effectiveness", f"{avg_rec}/10")
+                
+                st.divider()
+                render_neon_progress("Call Structure", r_scores['call_structure'])
+                render_neon_progress("Question Quality", r_scores['question_quality'])
+                render_neon_progress("Candidate Experience", r_scores['candidate_experience'])
+            
+            with st.expander("🎓 Coaching Tips", expanded=True):
+                st.markdown("**💡 Actionable Feedback**")
+                for c in res['recruiter']['coaching_feedback']: st.markdown(f"- {c}")
 
         st.divider()
-        st.markdown("### 🔄 Refine Draft")
-        c_ref_txt, c_ref_btn = st.columns([3, 1])
-        with c_ref_txt:
-            refine_inst = st.text_area("Instructions", height=100, placeholder="e.g. Make it punchier...")
-        with c_ref_btn:
-            st.write("")
-            st.write("")
-            if st.button("✨ Refine"):
-                with st.spinner("Refining..."):
-                    curr = {
-                        'title': st.session_state.final_title,
-                        'excerpt': st.session_state.final_excerpt,
-                        'html_content': st.session_state.final_content,
-                        'meta_title': st.session_state.elite_blog_v8.get('meta_title'),
-                        'meta_description': st.session_state.elite_blog_v8.get('meta_description')
-                    }
-                    new_post = agent_refine(curr, refine_inst, st.session_state.claude_model_selection)
-                    if new_post:
-                        st.session_state.final_title = new_post['title']
-                        st.session_state.final_content = new_post['html_content']
-                        st.session_state.final_excerpt = new_post['excerpt']
-                        st.rerun()
+        c_sum, c_quotes = st.columns(2)
+        
+        with c_sum:
+            st.markdown("### 📄 Call Summary")
+            for item in res['call_summary']:
+                st.markdown(f"• {item}")
+                
+        with c_quotes:
+            st.markdown("### 💬 Notable Moments")
+            for moment in res['candidate']['notable_moments']:
+                st.info(f'"{moment}"')
 
-        st.markdown("### ✏️ HTML Editor")
-        st.text_input("Title", key='final_title')
-        st.text_area("Excerpt (Max 300)", key='final_excerpt', max_chars=300)
-        st.text_area("HTML Body", key='final_content', height=600)
-
-        if st.button("🚀 Publish to Ghost", type="primary"):
-            tags = ["Sharp Blog"] 
-            if st.session_state.transcript_context: tags.append("Context Aware")
-            final_data = {
-                'title': st.session_state.final_title,
-                'excerpt': st.session_state.final_excerpt,
-                'html_content': st.session_state.final_content,
-                'meta_title': st.session_state.elite_blog_v8.get('meta_title'),
-                'meta_description': st.session_state.elite_blog_v8.get('meta_description')
-            }
-            # USE NEW CELEBRATION
-            if upload_ghost(final_data, st.session_state.get('elite_image_v8'), tags):
-                celebrate_with_logos()
-                st.success("Published!")
-            else:
-                st.error("Failed.")
-
-    with t2:
-        s = st.session_state.get('elite_socials', {})
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("### LinkedIn")
-            li = st.text_area("LinkedIn", value=s.get('linkedin', ''), height=200)
-            st.link_button("Post", generate_social_link(li, "linkedin"))
-        with c2:
-            st.markdown("### X")
-            tw = s.get('twitter_thread', [])
-            if isinstance(tw, str): tw = [tw]
-            hook = st.text_area("Hook", value=tw[0] if tw else "", height=100)
-            st.link_button("Post", generate_social_link(hook, "twitter"))
-            st.text_area("Thread", value="\n\n".join(tw[1:]), height=100)
-        with c3:
-            st.markdown("### Reddit")
-            rd = st.text_area("Reddit", value=s.get('reddit', ''), height=200)
-            st.link_button("Post", generate_social_link(rd, "reddit"))
+        with st.expander("View Raw Transcript"):
+            st.text(st.session_state.transcript_text)
