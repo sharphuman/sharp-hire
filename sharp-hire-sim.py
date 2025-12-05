@@ -5,7 +5,7 @@ import os
 from anthropic import Anthropic
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire SIM v2.0", page_icon="🎲", layout="wide")
+st.set_page_config(page_title="Sharp Hire SIM v2.1", page_icon="🎲", layout="wide")
 
 # --- SHARP PALETTE CSS ---
 st.markdown("""
@@ -33,11 +33,7 @@ st.markdown("""
         transform: scale(1.02);
         box-shadow: 0 0 15px #00ffab;
     }
-    /* Comparison Table Styling */
-    div[data-testid="stDataFrame"] {
-        border: 1px solid #333;
-        border-radius: 10px;
-    }
+    .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,7 +43,6 @@ if 'processing_status' not in st.session_state: st.session_state.processing_stat
 
 # --- SECRETS ---
 try:
-    # We only need Anthropic for text generation/simulation
     ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
 except:
     st.error("❌ Missing Anthropic API Key.")
@@ -63,49 +58,49 @@ def clean_json(text):
     elif "```" in text: text = text.split("```")[1].split("```")[0]
     return json.loads(text)
 
-def generate_full_scenario(job_title, industry, level):
+def generate_full_scenario(job_title, industry, level, requirements):
     """
-    Generates 1 JD and 3 Candidates (Good, Avg, Bad) in one go.
+    Generates 1 JD and 2 DEEP Candidates (Quality over Quantity).
     """
     prompt = f"""
-    You are a Hiring Simulation Engine. Generate a full recruitment scenario.
+    You are a Hiring Simulation Engine. Generate a detailed, life-like recruitment scenario.
     
     **PARAMETERS:**
     - Role: {job_title}
     - Industry: {industry}
     - Level: {level}
+    - Key Reqs: {requirements}
 
     **TASK:**
-    1. Create a short, professional Job Description (JD).
-    2. Create 3 Candidates with distinct profiles:
-       - **Candidate A (The Unicorn):** High skills, great culture fit.
-       - **Candidate B (The Stretch):** Good attitude, missing some key tech skills.
-       - **Candidate C (The Red Flag):** Good paper resume, but arrogant/evasive in interview.
-    3. For each candidate, generate a brief CV summary and a dialogue transcript (approx 400 words) of their interview.
+    1. **Job Description (JD):** Write a full, professional JD with Responsibilities and Requirements.
+    2. **Create 2 Distinct Candidates:**
+       - **Candidate A (The Strong Fit):** Competent, good communicator, clear experience.
+       - **Candidate B (The Risk/Bad Fit):** Maybe nervous, maybe lying, maybe technical but rude, or maybe lacks specific key skills.
+    
+    **CRITICAL INSTRUCTION: DETAIL LEVEL**
+    - **CV:** Do NOT summarize. Write the **FULL TEXT** of a resume. List companies, dates (e.g. 2018-2023), bullet points of projects, and skills. It must look like a text-dump of a PDF.
+    - **TRANSCRIPT:** Do NOT summarize. Write a **VERBATIM SCRIPT** of the interview. 
+        - Include "Umm", "Uh", pauses, and interruptions to make it realistic.
+        - The Recruiter should ask deep technical questions based on the requirements.
+        - The Candidate should give long, multi-sentence answers (or struggle significantly).
+        - Length: At least 20-30 exchanges per candidate.
 
     **OUTPUT JSON STRUCTURE:**
     {{
-        "job_description": "Full text of JD...",
+        "job_description": "Full JD Text...",
         "candidates": [
             {{
                 "id": "A",
                 "name": "Name",
-                "vibe": "The Unicorn",
-                "cv_summary": "...",
-                "transcript": "Recruiter: ... \nCandidate: ..."
+                "vibe": "Strong Match",
+                "cv_text": "EXPERIENCE\\n\\nSenior Engineer | Tech Corp | 2019-Present\\n- Managed Active Directory...",
+                "transcript": "Recruiter: Hi, thanks for joining.\\nCandidate: Yeah, great to be here.\\nRecruiter: Tell me about your experience with Quest Migration..."
             }},
             {{
                 "id": "B",
                 "name": "Name",
-                "vibe": "The Stretch",
-                "cv_summary": "...",
-                "transcript": "..."
-            }},
-            {{
-                "id": "C",
-                "name": "Name",
-                "vibe": "The Red Flag",
-                "cv_summary": "...",
+                "vibe": "Risky / Weak",
+                "cv_text": "...",
                 "transcript": "..."
             }}
         ]
@@ -115,7 +110,7 @@ def generate_full_scenario(job_title, industry, level):
     try:
         msg = client.messages.create(
             model="claude-3-5-sonnet-latest",
-            max_tokens=4000,
+            max_tokens=8000, # Increased for longer text
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -125,20 +120,20 @@ def generate_full_scenario(job_title, industry, level):
 
 def analyze_candidates(scenario_data):
     """
-    Analyzes all 3 candidates against the JD.
+    Analyzes the candidates using the "Sharp Hire" logic.
     """
     jd = scenario_data['job_description']
     cands = scenario_data['candidates']
     
     prompt = f"""
-    Analyze these 3 candidates against the Job Description.
+    Analyze these 2 candidates against the Job Description.
     
-    JOB DESCRIPTION: {jd[:1000]}...
+    JOB DESCRIPTION: {jd[:2000]}
     
     CANDIDATE DATA: {json.dumps(cands)}
     
     **TASK:**
-    Return a JSON with detailed scoring for each.
+    Return a JSON with detailed scoring.
     
     **OUTPUT JSON:**
     {{
@@ -154,19 +149,10 @@ def analyze_candidates(scenario_data):
             }},
             {{
                 "id": "B",
-                "role_fit_score": 6,
-                "comm_score": 8,
+                "role_fit_score": 4,
+                "comm_score": 5,
                 "tech_score": 5,
-                "culture_score": 9,
-                "verdict": "Maybe / Train",
-                "reasoning": "..."
-            }},
-            {{
-                "id": "C",
-                "role_fit_score": 8,
-                "comm_score": 4,
-                "tech_score": 8,
-                "culture_score": 2,
+                "culture_score": 4,
                 "verdict": "No Hire",
                 "reasoning": "..."
             }}
@@ -187,31 +173,42 @@ def analyze_candidates(scenario_data):
 
 # --- UI LAYOUT ---
 
-st.title("🎲 Sharp Hire: Simulation Mode")
-st.markdown("Generate and compare synthetic candidates for demo/training.")
+st.title("🎲 Sharp Hire: Deep Simulation")
+st.markdown("Generate full-length interviews and CVs for testing.")
 
 # INPUTS
-c1, c2, c3 = st.columns(3)
-with c1: job_title = st.text_input("Role Title", "Senior React Developer")
-with c2: industry = st.text_input("Industry", "Fintech")
-with c3: level = st.selectbox("Seniority", ["Junior", "Mid-Level", "Senior/Lead", "Executive"])
+c1, c2 = st.columns(2)
+with c1: 
+    job_title = st.text_input("Role Title", "Senior Infrastructure Engineer")
+    industry = st.text_input("Industry", "Enterprise IT")
+with c2: 
+    level = st.selectbox("Seniority", ["Senior/Lead", "Executive", "Mid-Level"])
+    requirements = st.text_input("Key Requirements", "Quest Migration, Active Directory, VMware, 20 Years Exp")
 
 if st.button("🎲 Run Simulation", type="primary", use_container_width=True):
-    with st.status("⚙️ Generating Simulation Data...", expanded=True) as status:
-        st.write("📝 Drafting Job Description & Candidates...")
-        scenario = generate_full_scenario(job_title, industry, level)
+    with st.status("⚙️ Generating Deep Simulation...", expanded=True) as status:
+        st.write("📝 Drafting detailed Job Description...")
+        st.write("👤 Inventing Candidates (Generating full CVs & Transcripts)...")
+        
+        # 1. Generate Content
+        scenario = generate_full_scenario(job_title, industry, level, requirements)
         
         if "error" in scenario:
             st.error(scenario['error'])
             st.stop()
             
-        st.write("🧠 Analyzing Candidates...")
+        st.write("🧠 Analyzing Performance...")
+        
+        # 2. Analyze Content
         analysis = analyze_candidates(scenario)
         
-        # Merge Data
+        if "error" in analysis:
+            st.error(analysis['error'])
+            st.stop()
+        
+        # 3. Merge Data
         final_data = []
         for i, cand in enumerate(scenario['candidates']):
-            # Find matching analysis
             an = next(item for item in analysis['analyses'] if item["id"] == cand["id"])
             merged = {**cand, **an}
             final_data.append(merged)
@@ -228,27 +225,21 @@ if st.session_state.sim_data:
     # 1. COMPARISON TABLE
     st.subheader("📊 Candidate Leaderboard")
     
-    # Create simple dataframe for display
     df_data = []
     for r in results:
         df_data.append({
             "Name": r['name'],
-            "Archetype": r['vibe'],
+            "Profile": r['vibe'],
             "Role Fit": r['role_fit_score'],
             "Tech Skills": r['tech_score'],
-            "Culture": r['culture_score'],
             "Verdict": r['verdict']
         })
     
-    df = pd.DataFrame(df_data)
-    
-    # Use standard dataframe with simple highlighting
     st.dataframe(
-        df,
+        pd.DataFrame(df_data),
         column_config={
             "Role Fit": st.column_config.ProgressColumn("Fit", format="%d", min_value=0, max_value=10),
             "Tech Skills": st.column_config.ProgressColumn("Tech", format="%d", min_value=0, max_value=10),
-            "Culture": st.column_config.ProgressColumn("Vibe", format="%d", min_value=0, max_value=10),
         },
         use_container_width=True,
         hide_index=True
@@ -257,31 +248,30 @@ if st.session_state.sim_data:
     st.divider()
 
     # 2. DEEP DIVE TABS
-    t_jd, t1, t2, t3 = st.tabs(["📄 Job Description", f"👤 {results[0]['name']}", f"👤 {results[1]['name']}", f"👤 {results[2]['name']}"])
+    t_jd, t1, t2 = st.tabs(["📄 Job Description", f"👤 {results[0]['name']}", f"👤 {results[1]['name']}"])
     
     with t_jd:
         st.markdown(st.session_state.sim_data['jd'])
 
-    # Loop through candidates to create tabs
-    tabs = [t1, t2, t3]
+    # Candidate Tabs
+    tabs = [t1, t2]
     for i, tab in enumerate(tabs):
         cand = results[i]
         with tab:
-            c_info, c_chat = st.columns([1, 1])
+            c_info, c_docs = st.columns([1, 1])
             
             with c_info:
                 st.markdown(f"### Verdict: {cand['verdict']}")
-                st.info(f"**AI Reasoning:** {cand['reasoning']}")
-                
-                st.markdown("#### 📝 CV Summary")
-                st.caption(cand['cv_summary'])
+                st.info(f"**AI Analysis:** {cand['reasoning']}")
                 
                 st.markdown("#### 📊 Scores")
                 st.progress(cand['role_fit_score']/10, text=f"Role Fit: {cand['role_fit_score']}/10")
                 st.progress(cand['comm_score']/10, text=f"Communication: {cand['comm_score']}/10")
                 st.progress(cand['culture_score']/10, text=f"Culture Fit: {cand['culture_score']}/10")
 
-            with c_chat:
-                st.markdown("#### 💬 Interview Transcript")
-                with st.container(border=True):
+            with c_docs:
+                with st.expander("📄 View Generated CV", expanded=True):
+                    st.text(cand['cv_text'])
+                
+                with st.expander("💬 View Interview Transcript", expanded=True):
                     st.text(cand['transcript'])
