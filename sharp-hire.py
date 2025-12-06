@@ -2,28 +2,37 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from anthropic import Anthropic
 from openai import OpenAI
 from pypdf import PdfReader
 from docx import Document
+from fpdf import FPDF
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Sharp Hire v1.9", page_icon="🎯", layout="wide")
+# ==============================================================================
+# 🧠 SHARP-STANDARDS PROTOCOL (v2.3)
+# ==============================================================================
+# 1. VISUAL IDENTITY: Deep Black (#0e1117), Neon Cyan (#00e5ff), Neon Green (#39ff14)
+# 2. OPS CENTER: Live Cost, Status Tile, Version v2.3
+# 3. INTELLIGENCE: Multi-Candidate Session State, PDF Generation, Email Integration
+# ==============================================================================
 
-# --- SHARP PALETTE CSS ---
+APP_VERSION = "v2.3"
+st.set_page_config(page_title="Sharp Hire", page_icon="🎯", layout="wide")
+
+# --- CSS: SHARP PALETTE ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #e0e0e0; }
-    
-    /* INPUTS */
     .stTextArea textarea, .stTextInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #1c1c1c !important;
         color: #00e5ff !important;
         border: 1px solid #333 !important;
         font-family: 'Helvetica Neue', sans-serif !important;
     }
-    
-    /* UPLOADER */
     div[data-testid="stFileUploader"] section {
         background-color: #161b22;
         border: 2px dashed #00e5ff; 
@@ -32,15 +41,12 @@ st.markdown("""
         display: flex; align-items: center; justify-content: center;
     }
     div[data-testid="stFileUploader"] section:hover { border-color: #00ffab; }
-
-    /* HEADERS */
     h1, h2, h3 {
         background: -webkit-linear-gradient(45deg, #00e5ff, #d500f9);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        font-weight: 700 !important;
     }
-    
-    /* BUTTONS */
     div[data-testid="stButton"] button {
         background: linear-gradient(45deg, #00e5ff, #00ffab) !important;
         color: #000000 !important;
@@ -53,40 +59,45 @@ st.markdown("""
         transform: scale(1.02);
         box-shadow: 0 0 15px #00ffab;
     }
-    
-    /* COST METRIC */
     div[data-testid="stMetricValue"] {
-        color: #39ff14 !important; /* Neon Green */
+        color: #39ff14 !important; 
         font-family: monospace;
-        font-size: 1.8rem !important;
+        font-size: 1.4rem !important;
     }
-    
+    .status-box {
+        background-color: #1c1c1c;
+        border-left: 3px solid #00e5ff;
+        padding: 10px;
+        font-family: monospace;
+        color: #aaa;
+        font-size: 0.9rem;
+    }
     .stAlert { background-color: #1c1c1c; border: 1px solid #333; color: #00e5ff; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE ---
-if 'analysis_result' not in st.session_state: st.session_state.analysis_result = None
-if 'transcript_text' not in st.session_state: st.session_state.transcript_text = ""
-if 'cv_text' not in st.session_state: st.session_state.cv_text = ""
+if 'candidates_list' not in st.session_state: st.session_state.candidates_list = []
 if 'jd_text' not in st.session_state: st.session_state.jd_text = ""
-if 'processing_status' not in st.session_state: st.session_state.processing_status = "Ready."
-# Initialize Costs
-if 'costs' not in st.session_state: st.session_state.costs = {"OpenAI (Audio)": 0.0, "Anthropic (Intel)": 0.0}
+if 'processing_log' not in st.session_state: st.session_state.processing_log = "Ready for Candidate 1."
 if 'total_cost' not in st.session_state: st.session_state.total_cost = 0.0
+if 'costs' not in st.session_state: st.session_state.costs = {"OpenAI (Audio)": 0.0, "Anthropic (Intel)": 0.0}
 
 # --- SECRETS ---
 try:
     ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 except:
-    st.error("❌ Missing API Keys.")
+    st.error("❌ Missing AI API Keys. Check secrets.toml")
     st.stop()
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- FUNCTIONS ---
+# --- UTILITIES ---
+
+def update_status(msg):
+    st.session_state.processing_log = msg
 
 def track_cost(provider, amount):
     st.session_state.costs[provider] += amount
@@ -112,7 +123,7 @@ def extract_text_from_file(file):
 def transcribe_audio(file):
     try:
         transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=file)
-        track_cost("OpenAI (Audio)", 0.06) # Est cost per file
+        track_cost("OpenAI (Audio)", 0.06) 
         return transcript.text
     except Exception as e:
         return f"Whisper Error: {str(e)}"
@@ -123,54 +134,129 @@ def clean_json_response(txt):
     elif "```" in txt: txt = txt.split("```")[1].split("```")[0]
     return txt.strip()
 
-def analyze_forensic(transcript, cv_text, jd_text):
-    system_prompt = f"""
-    You are a FORENSIC Talent Auditor. Your job is to strictly evaluate a hiring interaction.
-    
-    **DATA POINTS:**
-    1. **JD (The Standard):** What is required.
-    2. **CV (The Claim):** What the candidate says they did.
-    3. **TRANSCRIPT (The Evidence):** What actually happened.
+# --- PDF GENERATOR ---
+class SharpPDF(FPDF):
+    def header(self):
+        self.set_fill_color(14, 17, 23) # Deep Black
+        self.rect(0, 0, 210, 40, 'F')
+        self.set_font('Arial', 'B', 16)
+        self.set_text_color(0, 229, 255) # Neon Cyan
+        self.cell(0, 10, 'SHARP HIRE | INTELLIGENCE REPORT', 0, 1, 'C')
+        self.ln(10)
 
-    **SCORING PROTOCOL (0-10):**
-    - **5/10 is AVERAGE.** Do not give 7s or 8s for "okay" answers.
-    - **Discrepancy Penalty:** If Transcript contradicts CV, deduct 3 points immediately.
+    def section_title(self, label):
+        self.set_font('Arial', 'B', 12)
+        self.set_text_color(0, 229, 255) # Cyan
+        self.cell(0, 10, label, 0, 1, 'L')
+        self.set_text_color(0, 0, 0) # Black for body (on white page)
+
+    def chapter_body(self, body):
+        self.set_font('Arial', '', 10)
+        self.multi_cell(0, 6, body)
+        self.ln()
+
+def generate_sharp_pdf(results):
+    pdf = SharpPDF()
+    pdf.add_page()
+    
+    # Global Executive Summary (if available from first result or aggregated)
+    pdf.section_title("SESSION SUMMARY")
+    pdf.chapter_body(f"Candidates Analyzed: {len(results)}")
+    pdf.ln(5)
+    
+    for res in results:
+        cand = res['candidate']
+        rec = res['recruiter']
+        
+        pdf.set_fill_color(240, 240, 240)
+        pdf.rect(10, pdf.get_y(), 190, 10, 'F')
+        pdf.section_title(f"CANDIDATE: {cand['name']}  (Verdict: {cand['verdict']})")
+        
+        # Scores
+        scores = f"Fit: {cand['scores']['cv_match_score']}/10  |  Tech: {cand['scores']['technical_depth']}/10  |  Interview: {cand['scores']['interview_performance_score']}/10"
+        pdf.chapter_body(scores)
+        
+        pdf.chapter_body(f"Executive Summary: {res['executive_summary']}")
+        pdf.ln(2)
+        pdf.chapter_body("Strengths:")
+        for s in cand['strengths']: pdf.chapter_body(f"- {s}")
+        
+        pdf.ln(2)
+        pdf.chapter_body("Risks / Flags:")
+        for f in cand['red_flags']: pdf.chapter_body(f"- {f}")
+        
+        pdf.ln(5)
+        pdf.set_text_color(57, 255, 20) # Green Hint
+        pdf.cell(0, 10, f"Recruiter Score: {rec['scores']['question_quality']}/10 - {rec['coaching_tip']}", 0, 1)
+        pdf.set_text_color(0,0,0)
+        pdf.ln(10)
+
+    return pdf.output(dest='S').encode('latin-1', 'replace')
+
+# --- EMAIL ENGINE ---
+def send_email(to_email, pdf_bytes):
+    # Check for secrets
+    sender_email = st.secrets.get("EMAIL_USER")
+    sender_password = st.secrets.get("EMAIL_PASSWORD")
+    smtp_host = st.secrets.get("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = st.secrets.get("SMTP_PORT", 587)
+
+    if not (sender_email and sender_password):
+        return "❌ SMTP Secrets Missing (EMAIL_USER, EMAIL_PASSWORD)."
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = to_email
+        msg['Subject'] = "Sharp Hire Intelligence Report"
+        
+        body = "Attached is the forensic interview analysis report from Sharp Hire."
+        msg.attach(MIMEText(body, 'plain'))
+        
+        attachment = MIMEApplication(pdf_bytes, Name="Sharp_Hire_Report.pdf")
+        attachment['Content-Disposition'] = 'attachment; filename="Sharp_Hire_Report.pdf"'
+        msg.attach(attachment)
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        return "✅ Email Sent Successfully!"
+    except Exception as e:
+        return f"Error sending email: {str(e)}"
+
+# --- ANALYSIS ENGINE ---
+def analyze_comprehensive(transcript, cv_text, jd_text):
+    system_prompt = f"""
+    You are a FORENSIC Talent Auditor. Perform a deep, multi-vector analysis of a hiring interview.
+    
+    **DATA:** JD (Required), CV (Claims), TRANSCRIPT (Evidence).
+
+    **ANALYSIS VECTORS:**
+    1. **Recruiter:** Did they dig deep?
+    2. **Cand vs JD:** Skills match?
+    3. **Cand vs Questions:** Answer Quality/Directness.
+    4. **Cand vs CV:** Truthfulness.
 
     **OUTPUT JSON:**
     {{
+        "executive_summary": "High-level narrative for the Hiring Manager. Verdict and reasoning.",
         "candidate": {{
-            "name": "Name",
-            "scores": {{
-                "technical_depth": 0,
-                "communication_clarity": 0,
-                "cultural_alignment": 0,
-                "role_match_index": 0
-            }},
-            "score_reasoning": {{
-                "tech_reason": "Why this score? Cite specific evidence.",
-                "comm_reason": "Why this score?",
-                "match_reason": "Why this score?"
-            }},
-            "flags": {{
-                "cv_discrepancies": ["List specific contradictions"],
-                "red_flags": ["Behavioral or technical concerns"]
-            }},
-            "summary_verdict": "Hire / No Hire / Strong Hire"
+            "name": "Inferred Name",
+            "scores": {{ "cv_match_score": 0, "interview_performance_score": 0, "technical_depth": 0, "culture_fit": 0 }},
+            "fit_analysis": {{ "gap_analysis": "...", "jd_vs_transcript": "..." }},
+            "strengths": ["..."],
+            "red_flags": ["..."],
+            "verdict": "Hire / No Hire"
         }},
         "recruiter": {{
-            "scores": {{
-                "question_difficulty": 0,
-                "listening_skills": 0,
-                "jd_coverage": 0
-            }},
-            "missed_opportunities": ["Critical JD topics the recruiter forgot to ask"],
-            "coaching_tip": "One high-impact tip to improve."
+            "scores": {{ "question_quality": 0, "jd_coverage": 0 }},
+            "missed_opportunities": ["..."],
+            "coaching_tip": "..."
         }}
     }}
     """
-
-    user_msg = f"JD: {jd_text[:10000]}\nCV: {cv_text[:10000]}\nTRANSCRIPT: {transcript[:50000]}"
-
+    user_msg = f"JD: {jd_text[:10000]}\nCV: {cv_text[:10000]}\nTRANSCRIPT: {transcript[:40000]}"
     try:
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -179,131 +265,152 @@ def analyze_forensic(transcript, cv_text, jd_text):
             system=system_prompt,
             messages=[{"role": "user", "content": user_msg}]
         )
-        track_cost("Anthropic (Intel)", 0.03) # Est cost per analysis
+        track_cost("Anthropic (Intel)", 0.03) 
         return json.loads(clean_json_response(message.content[0].text))
     except Exception as e:
         return {"error": str(e)}
 
 def render_neon_progress(label, score, max_score=10):
     pct = (score / max_score) * 100
-    color = "#ff4b4b" # Red
-    if score >= 5: color = "#ffa700" # Orange
-    if score >= 7: color = "#39ff14" # Green
-    if score >= 9: color = "#00e5ff" # Cyan (Elite)
-
+    color = "#ff4b4b"
+    if score >= 5: color = "#ffa700"
+    if score >= 7: color = "#39ff14"
+    if score >= 9: color = "#00e5ff"
     st.markdown(f"""
-    <div style="margin-bottom: 12px;">
-        <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-            <span style="color: #e0e0e0;">{label}</span>
+    <div style="margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+            <span style="color: #bbb;">{label}</span>
             <span style="color: {color}; font-weight: bold;">{score}/10</span>
         </div>
-        <div style="background-color: #222; height: 8px; border-radius: 4px; margin-top: 4px;">
-            <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px; box-shadow: 0 0 6px {color};"></div>
+        <div style="background-color: #222; height: 6px; border-radius: 4px;">
+            <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px;"></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
 # --- LAYOUT ---
 
-# HEADER WITH COST CALCULATOR
-col_head, col_cost = st.columns([4, 1])
-with col_head:
-    st.title("🎯 Sharp Hire v1.9")
-    st.markdown("Forensic Interview Intelligence")
-with col_cost:
+c_title, c_meta = st.columns([3, 1])
+with c_title:
+    st.title("🎯 Sharp Hire")
+    st.caption("Multi-Candidate Interview Intelligence")
+with c_meta:
+    st.markdown(f"<div style='text-align: right; color: #666;'>{APP_VERSION}</div>", unsafe_allow_html=True)
     st.metric("Session Cost", f"${st.session_state.total_cost:.4f}")
-    with st.expander("Breakdown"):
-        st.write(st.session_state.costs)
+    st.markdown(f"<div class='status-box'><span style='color: #00e5ff;'>● SYSTEM ACTIVE</span><br>{st.session_state.processing_log}</div>", unsafe_allow_html=True)
 
 # INPUTS
 c1, c2, c3 = st.columns(3)
 with c1:
-    st.markdown("### 1. JD")
-    jd_file = st.file_uploader("Job Description", type=['pdf','docx','txt','md'], key="jd", label_visibility="collapsed")
+    st.markdown("### 1. The Job")
+    jd_file = st.file_uploader("JD (Stays for session)", type=['pdf','docx','txt'], key="jd", label_visibility="collapsed")
 with c2:
-    st.markdown("### 2. CV")
-    cv_file = st.file_uploader("Candidate CV", type=['pdf','docx','txt','md'], key="cv", label_visibility="collapsed")
+    st.markdown("### 2. The Candidate")
+    cv_file = st.file_uploader("CV (Updates per run)", type=['pdf','docx','txt'], key="cv", label_visibility="collapsed")
 with c3:
-    st.markdown("### 3. Transcript")
-    call_file = st.file_uploader("Interview Audio/Text", type=['mp3','wav','m4a','pdf','docx','txt','md'], key="call", label_visibility="collapsed")
+    st.markdown("### 3. The Interview")
+    call_file = st.file_uploader("Audio/Transcript", type=['mp3','wav','m4a','pdf','docx','txt'], key="call", label_visibility="collapsed")
 
-st.write("")
-start_btn = st.button("Start Forensic Audit", type="primary", use_container_width=True)
+c_btn, c_clear = st.columns([3, 1])
+with c_btn:
+    start_btn = st.button("Start Forensic Audit (Add to Session)", type="primary", use_container_width=True)
+with c_clear:
+    if st.button("Reset Session"):
+        st.session_state.candidates_list = []
+        st.rerun()
 
+# --- PROCESSING ---
 if start_btn:
     if not (jd_file and cv_file and call_file):
-        st.warning("⚠️ Please upload ALL 3 files.")
+        st.warning("⚠️ Upload JD, CV, and Transcript.")
     else:
         try:
-            # STATUS TILE CONTAINER
-            status_container = st.status("🚀 Initializing Audit...", expanded=True)
-            
-            status_container.write("📂 Extracting text layers...")
-            st.session_state.jd_text = extract_text_from_file(jd_file)
-            st.session_state.cv_text = extract_text_from_file(cv_file)
-            st.session_state.transcript_text = extract_text_from_file(call_file)
-            
-            status_container.write("🔍 Cross-referencing CV against Audio...")
-            status_container.write("⚖️ Auditing Recruiter Performance...")
-            
-            res = analyze_forensic(st.session_state.transcript_text, st.session_state.cv_text, st.session_state.jd_text)
-            st.session_state.analysis_result = res
-            
-            status_container.update(label="✅ Forensic Audit Complete", state="complete", expanded=False)
-            st.rerun() 
-        except Exception as e:
-            st.error(f"Critical Error: {e}")
-            st.stop()
-
-# --- FORENSIC RESULTS DASHBOARD ---
-if st.session_state.analysis_result:
-    r = st.session_state.analysis_result
-    if "error" in r:
-        st.error(r['error'])
-    else:
-        st.divider()
-        c_cand, c_rec = st.columns(2)
-        
-        # CANDIDATE AUDIT
-        with c_cand:
-            cand = r['candidate']
-            st.subheader(f"👤 {cand['name']}")
-            st.caption(f"Verdict: **{cand['summary_verdict']}**")
-            
-            with st.container(border=True):
-                s = cand['scores']
-                render_neon_progress("Role Match Index", s['role_match_index'])
-                st.caption(f"_{cand['score_reasoning']['match_reason']}_")
+            with st.status("🚀 Analyzing Candidate...", expanded=True) as status:
+                # 1. JD (Persist if already read, else read)
+                if not st.session_state.jd_text:
+                    update_status("Reading JD...")
+                    st.session_state.jd_text = extract_text_from_file(jd_file)
                 
-                render_neon_progress("Technical Depth", s['technical_depth'])
-                st.caption(f"_{cand['score_reasoning']['tech_reason']}_")
+                # 2. New Candidate Data
+                update_status("Reading CV & Transcript...")
+                cv_txt = extract_text_from_file(cv_file)
+                trans_txt = extract_text_from_file(call_file)
                 
-                render_neon_progress("Communication", s['communication_clarity'])
+                # 3. Analyze
+                update_status("Running Forensic Logic...")
+                res = analyze_comprehensive(trans_txt, cv_txt, st.session_state.jd_text)
                 
-            st.markdown("#### 🚩 Risk Assessment")
-            if cand['flags']['cv_discrepancies']:
-                for f in cand['flags']['cv_discrepancies']: st.error(f"**Discrepancy:** {f}")
-            else:
-                st.success("No CV contradictions found.")
-                
-            if cand['flags']['red_flags']:
-                for f in cand['flags']['red_flags']: st.warning(f"**Flag:** {f}")
-
-        # RECRUITER AUDIT
-        with c_rec:
-            rec = r['recruiter']
-            st.subheader("🎧 Recruiter Audit")
-            
-            with st.container(border=True):
-                rs = rec['scores']
-                render_neon_progress("Question Difficulty", rs['question_difficulty'])
-                render_neon_progress("JD Coverage", rs['jd_coverage'])
-                
-                st.markdown("---")
-                st.markdown("#### ⚠️ Missed Topics")
-                if rec['missed_opportunities']:
-                    for m in rec['missed_opportunities']: st.markdown(f"❌ {m}")
+                if "error" not in res:
+                    st.session_state.candidates_list.append(res)
+                    status.update(label="✅ Added to Session!", state="complete", expanded=False)
                 else:
-                    st.success("Excellent coverage.")
+                    st.error(res['error'])
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# --- MULTI-CANDIDATE DASHBOARD ---
+if st.session_state.candidates_list:
+    st.divider()
+    st.subheader(f"📊 Assessment Session ({len(st.session_state.candidates_list)} Candidates)")
+    
+    # Create Tabs for each candidate
+    tabs = st.tabs([f"👤 {c['candidate']['name']}" for c in st.session_state.candidates_list])
+    
+    for i, tab in enumerate(tabs):
+        data = st.session_state.candidates_list[i]
+        cand = data['candidate']
+        rec = data['recruiter']
+        
+        with tab:
+            st.info(f"**Executive Summary:** {data['executive_summary']}")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("#### Candidate Performance")
+                with st.container(border=True):
+                    s = cand['scores']
+                    render_neon_progress("Paper Fit (CV)", s['cv_match_score'])
+                    render_neon_progress("Actual Fit (Interview)", s['interview_performance_score'])
+                    render_neon_progress("Tech Depth", s['technical_depth'])
+                    render_neon_progress("Truthfulness", s['cv_truthfulness'])
                 
-                st.info(f"**💡 Coach's Tip:** {rec['coaching_tip']}")
+                with st.expander("Details & Flags"):
+                    st.write(cand['fit_analysis']['gap_analysis'])
+                    for f in cand['red_flags']: st.warning(f)
+
+            with col_b:
+                st.markdown("#### Recruiter Performance")
+                with st.container(border=True):
+                    rs = rec['scores']
+                    render_neon_progress("Question Quality", rs['question_quality'])
+                    render_neon_progress("JD Coverage", rs['jd_coverage'])
+                    st.caption(f"Coach: {rec['coaching_tip']}")
+                    
+    # --- EXPORT SECTION ---
+    st.divider()
+    st.markdown("### 📤 Export Session")
+    
+    # Generate PDF
+    pdf_bytes = generate_sharp_pdf(st.session_state.candidates_list)
+    
+    c_down, c_email = st.columns(2)
+    
+    with c_down:
+        st.download_button(
+            label="⬇️ Download Full PDF Report",
+            data=pdf_bytes,
+            file_name="Sharp_Hire_Report.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+        
+    with c_email:
+        email_target = st.text_input("Email Report To:", placeholder="recruiter@company.com")
+        if st.button("📧 Send Email"):
+            if email_target:
+                with st.spinner("Sending..."):
+                    res = send_email(email_target, pdf_bytes)
+                    if "Success" in res: st.success(res)
+                    else: st.error(res)
+            else:
+                st.warning("Enter an email address.")
