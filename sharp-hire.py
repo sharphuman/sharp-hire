@@ -13,14 +13,10 @@ from docx import Document
 from fpdf import FPDF
 
 # ==============================================================================
-# 🧠 SHARP-STANDARDS PROTOCOL (v2.3)
-# ==============================================================================
-# 1. VISUAL IDENTITY: Deep Black (#0e1117), Neon Cyan (#00e5ff), Neon Green (#39ff14)
-# 2. OPS CENTER: Live Cost, Status Tile, Version v2.3
-# 3. INTELLIGENCE: Multi-Candidate Session State, PDF Generation, Email Integration
+# 🧠 SHARP-STANDARDS PROTOCOL (v2.3.1)
 # ==============================================================================
 
-APP_VERSION = "v2.3"
+APP_VERSION = "v2.3.1"
 st.set_page_config(page_title="Sharp Hire", page_icon="🎯", layout="wide")
 
 # --- CSS: SHARP PALETTE ---
@@ -79,7 +75,7 @@ st.markdown("""
 # --- SESSION STATE ---
 if 'candidates_list' not in st.session_state: st.session_state.candidates_list = []
 if 'jd_text' not in st.session_state: st.session_state.jd_text = ""
-if 'processing_log' not in st.session_state: st.session_state.processing_log = "Ready for Candidate 1."
+if 'processing_log' not in st.session_state: st.session_state.processing_log = "Ready."
 if 'total_cost' not in st.session_state: st.session_state.total_cost = 0.0
 if 'costs' not in st.session_state: st.session_state.costs = {"OpenAI (Audio)": 0.0, "Anthropic (Intel)": 0.0}
 
@@ -148,7 +144,7 @@ class SharpPDF(FPDF):
         self.set_font('Arial', 'B', 12)
         self.set_text_color(0, 229, 255) # Cyan
         self.cell(0, 10, label, 0, 1, 'L')
-        self.set_text_color(0, 0, 0) # Black for body (on white page)
+        self.set_text_color(0, 0, 0) # Black for body
 
     def chapter_body(self, body):
         self.set_font('Arial', '', 10)
@@ -158,8 +154,6 @@ class SharpPDF(FPDF):
 def generate_sharp_pdf(results):
     pdf = SharpPDF()
     pdf.add_page()
-    
-    # Global Executive Summary (if available from first result or aggregated)
     pdf.section_title("SESSION SUMMARY")
     pdf.chapter_body(f"Candidates Analyzed: {len(results)}")
     pdf.ln(5)
@@ -167,35 +161,22 @@ def generate_sharp_pdf(results):
     for res in results:
         cand = res['candidate']
         rec = res['recruiter']
-        
         pdf.set_fill_color(240, 240, 240)
         pdf.rect(10, pdf.get_y(), 190, 10, 'F')
         pdf.section_title(f"CANDIDATE: {cand['name']}  (Verdict: {cand['verdict']})")
         
-        # Scores
-        scores = f"Fit: {cand['scores']['cv_match_score']}/10  |  Tech: {cand['scores']['technical_depth']}/10  |  Interview: {cand['scores']['interview_performance_score']}/10"
+        # Safe score access
+        s = cand['scores']
+        scores = f"Paper Fit: {s.get('cv_match_score',0)}/10 | Actual Fit: {s.get('interview_performance_score',0)}/10 | Truth: {s.get('cv_truthfulness',0)}/10"
         pdf.chapter_body(scores)
         
-        pdf.chapter_body(f"Executive Summary: {res['executive_summary']}")
-        pdf.ln(2)
-        pdf.chapter_body("Strengths:")
-        for s in cand['strengths']: pdf.chapter_body(f"- {s}")
-        
-        pdf.ln(2)
-        pdf.chapter_body("Risks / Flags:")
-        for f in cand['red_flags']: pdf.chapter_body(f"- {f}")
-        
+        pdf.chapter_body(f"Summary: {res['executive_summary']}")
         pdf.ln(5)
-        pdf.set_text_color(57, 255, 20) # Green Hint
-        pdf.cell(0, 10, f"Recruiter Score: {rec['scores']['question_quality']}/10 - {rec['coaching_tip']}", 0, 1)
-        pdf.set_text_color(0,0,0)
-        pdf.ln(10)
-
+        
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- EMAIL ENGINE ---
 def send_email(to_email, pdf_bytes):
-    # Check for secrets
     sender_email = st.secrets.get("EMAIL_USER")
     sender_password = st.secrets.get("EMAIL_PASSWORD")
     smtp_host = st.secrets.get("SMTP_HOST", "smtp.gmail.com")
@@ -209,14 +190,11 @@ def send_email(to_email, pdf_bytes):
         msg['From'] = sender_email
         msg['To'] = to_email
         msg['Subject'] = "Sharp Hire Intelligence Report"
-        
         body = "Attached is the forensic interview analysis report from Sharp Hire."
         msg.attach(MIMEText(body, 'plain'))
-        
         attachment = MIMEApplication(pdf_bytes, Name="Sharp_Hire_Report.pdf")
         attachment['Content-Disposition'] = 'attachment; filename="Sharp_Hire_Report.pdf"'
         msg.attach(attachment)
-
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(sender_email, sender_password)
@@ -227,8 +205,9 @@ def send_email(to_email, pdf_bytes):
 
 # --- ANALYSIS ENGINE ---
 def analyze_comprehensive(transcript, cv_text, jd_text):
+    # FIX: Explicitly demanding 'cv_truthfulness' in the prompt
     system_prompt = f"""
-    You are a FORENSIC Talent Auditor. Perform a deep, multi-vector analysis of a hiring interview.
+    You are a FORENSIC Talent Auditor. Perform a deep, multi-vector analysis.
     
     **DATA:** JD (Required), CV (Claims), TRANSCRIPT (Evidence).
 
@@ -236,14 +215,20 @@ def analyze_comprehensive(transcript, cv_text, jd_text):
     1. **Recruiter:** Did they dig deep?
     2. **Cand vs JD:** Skills match?
     3. **Cand vs Questions:** Answer Quality/Directness.
-    4. **Cand vs CV:** Truthfulness.
+    4. **Cand vs CV:** Truthfulness (Did they lie?).
 
-    **OUTPUT JSON:**
+    **OUTPUT JSON STRUCTURE:**
     {{
-        "executive_summary": "High-level narrative for the Hiring Manager. Verdict and reasoning.",
+        "executive_summary": "High-level narrative.",
         "candidate": {{
             "name": "Inferred Name",
-            "scores": {{ "cv_match_score": 0, "interview_performance_score": 0, "technical_depth": 0, "culture_fit": 0 }},
+            "scores": {{ 
+                "cv_match_score": 0, 
+                "interview_performance_score": 0, 
+                "technical_depth": 0, 
+                "culture_fit": 0,
+                "cv_truthfulness": 0 
+            }},
             "fit_analysis": {{ "gap_analysis": "...", "jd_vs_transcript": "..." }},
             "strengths": ["..."],
             "red_flags": ["..."],
@@ -271,6 +256,9 @@ def analyze_comprehensive(transcript, cv_text, jd_text):
         return {"error": str(e)}
 
 def render_neon_progress(label, score, max_score=10):
+    # Handle missing keys gracefully just in case
+    if score is None: score = 0
+    
     pct = (score / max_score) * 100
     color = "#ff4b4b"
     if score >= 5: color = "#ffa700"
@@ -299,7 +287,6 @@ with c_meta:
     st.metric("Session Cost", f"${st.session_state.total_cost:.4f}")
     st.markdown(f"<div class='status-box'><span style='color: #00e5ff;'>● SYSTEM ACTIVE</span><br>{st.session_state.processing_log}</div>", unsafe_allow_html=True)
 
-# INPUTS
 c1, c2, c3 = st.columns(3)
 with c1:
     st.markdown("### 1. The Job")
@@ -326,17 +313,14 @@ if start_btn:
     else:
         try:
             with st.status("🚀 Analyzing Candidate...", expanded=True) as status:
-                # 1. JD (Persist if already read, else read)
                 if not st.session_state.jd_text:
                     update_status("Reading JD...")
                     st.session_state.jd_text = extract_text_from_file(jd_file)
                 
-                # 2. New Candidate Data
                 update_status("Reading CV & Transcript...")
                 cv_txt = extract_text_from_file(cv_file)
                 trans_txt = extract_text_from_file(call_file)
                 
-                # 3. Analyze
                 update_status("Running Forensic Logic...")
                 res = analyze_comprehensive(trans_txt, cv_txt, st.session_state.jd_text)
                 
@@ -348,12 +332,11 @@ if start_btn:
         except Exception as e:
             st.error(f"Error: {e}")
 
-# --- MULTI-CANDIDATE DASHBOARD ---
+# --- DASHBOARD ---
 if st.session_state.candidates_list:
     st.divider()
     st.subheader(f"📊 Assessment Session ({len(st.session_state.candidates_list)} Candidates)")
     
-    # Create Tabs for each candidate
     tabs = st.tabs([f"👤 {c['candidate']['name']}" for c in st.session_state.candidates_list])
     
     for i, tab in enumerate(tabs):
@@ -369,10 +352,11 @@ if st.session_state.candidates_list:
                 st.markdown("#### Candidate Performance")
                 with st.container(border=True):
                     s = cand['scores']
-                    render_neon_progress("Paper Fit (CV)", s['cv_match_score'])
-                    render_neon_progress("Actual Fit (Interview)", s['interview_performance_score'])
-                    render_neon_progress("Tech Depth", s['technical_depth'])
-                    render_neon_progress("Truthfulness", s['cv_truthfulness'])
+                    # Corrected keys match the prompt now
+                    render_neon_progress("Paper Fit (CV)", s.get('cv_match_score', 0))
+                    render_neon_progress("Actual Fit (Interview)", s.get('interview_performance_score', 0))
+                    render_neon_progress("Tech Depth", s.get('technical_depth', 0))
+                    render_neon_progress("Truthfulness", s.get('cv_truthfulness', 0))
                 
                 with st.expander("Details & Flags"):
                     st.write(cand['fit_analysis']['gap_analysis'])
@@ -382,17 +366,14 @@ if st.session_state.candidates_list:
                 st.markdown("#### Recruiter Performance")
                 with st.container(border=True):
                     rs = rec['scores']
-                    render_neon_progress("Question Quality", rs['question_quality'])
-                    render_neon_progress("JD Coverage", rs['jd_coverage'])
+                    render_neon_progress("Question Quality", rs.get('question_quality', 0))
+                    render_neon_progress("JD Coverage", rs.get('jd_coverage', 0))
                     st.caption(f"Coach: {rec['coaching_tip']}")
                     
-    # --- EXPORT SECTION ---
     st.divider()
     st.markdown("### 📤 Export Session")
     
-    # Generate PDF
     pdf_bytes = generate_sharp_pdf(st.session_state.candidates_list)
-    
     c_down, c_email = st.columns(2)
     
     with c_down:
@@ -412,5 +393,3 @@ if st.session_state.candidates_list:
                     res = send_email(email_target, pdf_bytes)
                     if "Success" in res: st.success(res)
                     else: st.error(res)
-            else:
-                st.warning("Enter an email address.")
